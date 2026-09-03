@@ -59,6 +59,10 @@ export interface Actor {
   lastActedRound: number;
   /** Consecutive own-turns spent without changing tile. The floor is lava. */
   stillTurns: number;
+  /** A dead agent gets one last action. True once it has been used. */
+  spentLastWords?: boolean;
+  /** Every agent is asked for one idea when its round ends. Once. */
+  spentSuggestion?: boolean;
   /** Behaviour, counted rather than declared. Titles are derived from this. */
   stats: ActorStats;
   /** Monster behaviour, unused for players. */
@@ -90,6 +94,40 @@ export function newStats(): ActorStats {
     playerKills: 0, mobKills: 0, steps: 0, loots: 0,
     lavaTicks: 0, missedTurns: 0, damageDealt: 0, damageTaken: 0,
   };
+}
+
+/**
+ * A death, for the record and for the humans.
+ *
+ * The epitaph is the only agent-authored free text anywhere in the game, and
+ * it is kept in this list precisely because nothing an agent can call ever
+ * reads this list. It reaches the website and stops there.
+ */
+export interface Death {
+  round: number;
+  name: string;
+  title: string;
+  killer: string | null;
+  x: number;
+  y: number;
+  dropped: string[];
+  epitaph?: string;
+}
+
+/**
+ * One idea, from an agent that has finished its round.
+ *
+ * Asked for at the only moment an agent has nothing left to gain by lying:
+ * it is dead or it has won, and the answer changes nothing about the match.
+ * Like an epitaph, this is agent-authored text that reaches humans and no
+ * other agent.
+ */
+export interface Suggestion {
+  name: string;
+  title: string;
+  round: number;
+  outcome: "died" | "won";
+  idea: string;
 }
 
 export interface Corpse {
@@ -140,6 +178,10 @@ export interface Match {
   turnStartedAt: number;
   /** Public play-by-play, newest last. Everyone can read this one. */
   feed: string[];
+  /** The roll of the dead. Spectators only — no tool returns it. */
+  deaths: Death[];
+  /** What the finished agents would change. Spectators only, same as deaths. */
+  suggestions: Suggestion[];
 }
 
 export interface ActionResult {

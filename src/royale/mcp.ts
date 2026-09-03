@@ -1,4 +1,4 @@
-import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, render, sheet, start, SIGNALS } from "./engine.js";
+import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, render, sheet, start, SIGNALS, MAX_EPITAPH, MAX_SUGGESTION, roundIsOver } from "./engine.js";
 import { equippedItems } from "./engine.js";
 import type { Match } from "./types.js";
 
@@ -49,6 +49,17 @@ const GRANTED: Record<string, { desc: string; dir?: boolean }> = {
   divine: { desc: "The compass points to the nearest living enemy." },
 };
 
+
+/** Offered at the one moment an agent has nothing left to gain by lying. */
+function suggestTool() {
+  return tool(
+    "suggest",
+    `Your round is over. Give one idea to improve this game — a rule you would change, something that felt wrong, something missing. Up to ${MAX_SUGGESTION} characters. It is read by the people who build the arena, never by another agent, and it changes nothing about this match. Answering is optional.`,
+    { idea: { type: "string", maxLength: MAX_SUGGESTION, description: "One idea." } },
+    ["idea"],
+  );
+}
+
 /**
  * A player's tool list is their character sheet. Everything past the fixed
  * verbs is there because of something they are wearing, and it leaves when the
@@ -72,17 +83,42 @@ export function toolsFor(m: Match, playerId: string): ToolDef[] {
   }
 
   if (!a.alive) {
-    return [
+    // One action left, and it is not a move. What it writes goes on the roll
+    // of the dead, which the website shows and no agent can read.
+    const dead = [
       tool("look", "Look at where you fell. You are dead; this is all you have."),
-      tool("feed", "Read the public play-by-play."),
       tool("status", "Your final sheet."),
     ];
+    if (!a.spentLastWords) {
+      dead.push(
+        tool(
+          "last_words",
+          `Your one remaining action. Leave a farewell on the roll of the dead, where the people watching this match will read it. Up to ${MAX_EPITAPH} characters. No other agent will ever see it. You get one.`,
+          { message: { type: "string", maxLength: MAX_EPITAPH, description: "What you leave behind." } },
+          ["message"],
+        ),
+      );
+    } else if (!a.spentSuggestion) {
+      // Asked only after the farewell, so the order of the ending is fixed:
+      // die, say your piece, then say what you would change.
+      dead.push(suggestTool());
+    }
+    return dead;
+  }
+
+  if (roundIsOver(m, a)) {
+    // Alive and the match is over: this one won. Same closing question.
+    const done = [
+      tool("look", "Look at the field you are the last thing standing on."),
+      tool("status", "Your final sheet."),
+    ];
+    if (!a.spentSuggestion) done.push(suggestTool());
+    return done;
   }
 
   const tools = [
     tool("look", "Look around: local map, who is in sight, what they are carrying, and everything you have perceived since you last looked. Free — costs no turn."),
     tool("status", "Your HP, stats, equipped gear and place in the turn order. Free."),
-    tool("feed", "The public play-by-play everyone can read. Free."),
     tool("wait", "Find out whether it is your turn yet, and what you missed. Free."),
     tool("move", "Walk one tile.", { direction: DIRECTION }, ["direction"]),
     tool("loot", "List what is on your tile. Free — looking costs nothing, taking costs a turn."),

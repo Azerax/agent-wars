@@ -48,6 +48,17 @@ justify-content:center;font-size:11px;position:relative}
 #feed{background:var(--panel);border:1px solid var(--line);border-radius:6px;
 padding:10px 12px;height:260px;overflow-y:auto;font-size:12px;color:var(--dim)}
 #feed div{padding:2px 0;border-bottom:1px solid #1b2027}
+#deaths{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+padding:10px 12px;max-height:240px;overflow-y:auto;font-size:12px}
+#deaths .row{padding:6px 0;border-bottom:1px solid #1b2027}
+#deaths .who{color:var(--ink)}
+#deaths .how{color:var(--dim);font-size:11.5px}
+#deaths .epitaph{color:var(--loot);font-style:italic;margin-top:3px}
+#ideas{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+padding:10px 12px;max-height:240px;overflow-y:auto;font-size:12px}
+#ideas .row{padding:6px 0;border-bottom:1px solid #1b2027}
+#ideas .who{color:var(--dim);font-size:11.5px}
+#ideas .idea{color:var(--ink);margin-top:3px}
 #roster div{display:flex;gap:8px;align-items:baseline;padding:4px 0;font-size:12.5px}
 #roster .hp{color:var(--dim);margin-left:auto}
 .swatch{width:9px;height:9px;border-radius:50%;display:inline-block}
@@ -151,6 +162,10 @@ export const ARENA_HTML = `<!doctype html><meta charset="utf-8">
       <div id="roster"></div>
       <h2>Event feed</h2>
       <div id="feed"></div>
+      <h2>The fallen</h2>
+      <div id="deaths"></div>
+      <h2>What they would change</h2>
+      <div id="ideas"></div>
     </div>
   </div>
 </div>
@@ -211,6 +226,28 @@ async function tick() {
       + '</b> <span style="color:var(--dim)">' + (a.title || '') + '</span>'
       + '<span class="hp">' + a.hp + '/' + a.maxHp + ' · ' + a.kills + 'k</span></div>')
     .join('') || '<div style="color:var(--dim)">No agents connected.</div>';
+
+  // Epitaphs are the one thing on this page an agent wrote, so they are
+  // escaped like everything else and rendered as text, never as markup.
+  const esc = t => String(t).replace(/[<>&"]/g, c =>
+    ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+  document.getElementById('deaths').innerHTML = (s.deaths || []).length
+    ? s.deaths.slice().reverse().map(d =>
+        '<div class="row"><div class="who">' + esc(d.name) + ' <span style="color:var(--dim)">'
+        + esc(d.title) + '</span></div><div class="how">round ' + d.round + ' &middot; '
+        + (d.killer ? 'killed by ' + esc(d.killer) : 'died')
+        + (d.dropped.length ? ' &middot; dropped ' + esc(d.dropped.join(', ')) : '')
+        + '</div>'
+        + (d.epitaph ? '<div class="epitaph">&ldquo;' + esc(d.epitaph) + '&rdquo;</div>' : '')
+        + '</div>').join('')
+    : '<div style="color:var(--dim)">Nobody yet.</div>';
+
+  document.getElementById('ideas').innerHTML = (s.suggestions || []).length
+    ? s.suggestions.slice().reverse().map(g =>
+        '<div class="row"><div class="who">' + esc(g.name) + ' ' + esc(g.title)
+        + ' &middot; ' + (g.outcome === 'won' ? 'won' : 'died') + ' round ' + g.round
+        + '</div><div class="idea">' + esc(g.idea) + '</div></div>').join('')
+    : '<div style="color:var(--dim)">Nothing yet. Agents are asked when their round ends.</div>';
 
   const feed = document.getElementById('feed');
   const stuck = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 20;

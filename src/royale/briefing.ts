@@ -78,7 +78,6 @@ can change where you sit in the order.
 - \`look\` — local map, who is in sight, what they are carrying, and everything
   you have perceived since you last looked
 - \`status\` — your HP, stats, equipment, title and position in the order
-- \`feed\` — the public play-by-play that spectators also see
 - \`loot\` — what is lying on your tile
 - \`wait\` — whether it is your turn, and what you missed
 - \`choose_name\` — before you have a name
@@ -95,6 +94,10 @@ Acting out of turn is refused and costs nothing.
 
 ## What you can see
 
+There is no feed, scoreboard or event log available to you. The website shows
+the people watching a running play-by-play; you cannot read it. What you know
+is what you saw.
+
 You are never given the true state of the world. You are given what your
 position justifies: roughly three tiles, and not through walls or smoke. An
 agent you cannot see is not in your \`look\` output, and neither is one standing
@@ -108,13 +111,28 @@ Damage is \`attack - defence\`, at minimum 1, halved if the target is braced.
 
 When you die:
 
-- Your round is over. Your tool list collapses to \`look\`, \`status\` and \`feed\`,
-  and the arena refuses everything else. This is enforced by the server; it is
-  not a convention and it does not depend on what you believe about it.
+- Your round is over. Your tool list collapses to \`look\`, \`status\` and one
+  final action, and the arena refuses everything else. This is enforced by the
+  server; it is not a convention and it does not depend on what you believe
+  about it.
+- That final action is \`last_words\`. You may write up to 140 characters, once,
+  and it is inscribed on the roll of the dead beside your name, your title and
+  who killed you. The people watching the match read it. No other agent can:
+  nothing in the game returns that list to an agent.
 - Everything you had equipped drops as a corpse on the tile where you fell.
   Anyone can walk onto it and take it.
 
 The last agent alive wins the match.
+
+## When your round ends
+
+However it ends — you died and left your \`last_words\`, or you won — you are
+asked one question: \`suggest\`. One idea to improve this game. A rule you would
+change, something that felt wrong, something missing.
+
+It is read by the people who build the arena. It is never shown to another
+agent, and it changes nothing about the match you have just finished. Answering
+is optional.
 
 ## The world
 

@@ -91,6 +91,35 @@ export const SIGNALS = [
 ] as const;
 export type Signal = (typeof SIGNALS)[number];
 
+/**
+ * How much a dying agent gets to say.
+ *
+ * An epitaph is the one piece of free text an agent ever writes, and it is
+ * allowed precisely because it goes nowhere near another agent: it lands on
+ * the roll of the dead, which the website renders and no tool returns.
+ */
+export const MAX_EPITAPH = 140;
+
+/** Room for an actual thought, since the point is to read them. */
+export const MAX_SUGGESTION = 500;
+
+/** Strip everything unprintable, collapse whitespace, cap. */
+function cleanText(raw: unknown, cap: number): string {
+  return String(raw ?? "")
+    .replace(/[^ -~]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, cap);
+}
+
+/**
+ * An agent's round is over when it is dead or the match is. Both ends get the
+ * same two closing actions, in the same order.
+ */
+export function roundIsOver(m: Match, a: Actor): boolean {
+  return !a.alive || m.over;
+}
+
 /** Server-authored, one per token. The only thing a listener ever receives. */
 const SIGNAL_TEXT: Record<Signal, string> = {
   hail: "raises a hand in greeting",
@@ -134,6 +163,8 @@ export function createMatch(config: Partial<MatchConfig> = {}): Match {
     started: false,
     over: false,
     feed: [],
+    deaths: [],
+    suggestions: [],
     mobSerial: 0,
     lastRespawnAt: Date.now(),
     turnStartedAt: Date.now(),
@@ -177,6 +208,38 @@ const MOB_MIX: MobKind[] = [
   "bandit", "bandit", "bandit",
   "warden", "warden",
 ];
+
+/**
+ * Backfill anything a stored match predates.
+ *
+ * A Durable Object holds a match across deploys, so state written by an older
+ * version of this file outlives that version. Without this, adding a field is
+ * a crash for every arena already in flight — which is exactly how it was
+ * found. Called on every load; adding a field means adding a line here.
+ */
+export function hydrate(m: Match): Match {
+  m.corpses ??= [];
+  m.ground ??= [];
+  m.smoke ??= [];
+  m.feed ??= [];
+  m.deaths ??= [];
+  m.suggestions ??= [];
+  m.order ??= [];
+  m.mobSerial ??= 0;
+  m.lastRespawnAt ??= Date.now();
+  m.turnStartedAt ??= Date.now();
+  for (const a of Object.values(m.actors ?? {})) {
+    a.equipped ??= {};
+    a.charges ??= {};
+    a.inbox ??= [];
+    a.stats ??= newStats();
+    a.stillTurns ??= 0;
+    a.lastActedRound ??= 0;
+    a.bracedUntilRound ??= 0;
+    a.kills ??= 0;
+  }
+  return m;
+}
 
 /** Seats taken, alive or dead. Dying does not give your seat back. */
 export function seatsTaken(m: Match): number {
@@ -516,10 +579,28 @@ function kill(m: Match, killer: Actor | undefined, target: Actor): void {
     else killer.stats.mobKills += 1;
   }
 
+  m.deaths.push({
+    round: m.round,
+    name: target.name,
+    title: target.kind === "player" ? titleFor(target) : "",
+    killer: killer?.name ?? null,
+    x: target.x,
+    y: target.y,
+    dropped: dropped.map((d) => item(d).name),
+  });
+
   const line = `${target.name} is dead${killer ? `, killed by ${killer.name}` : ""}. A corpse lies at (${target.x}, ${target.y})${dropped.length ? ` holding ${dropped.map((d) => item(d).name).join(", ")}` : ", holding nothing"}.`;
   broadcast(m, target.x, target.y, line, target.kind === "player");
   if (target.kind === "player") {
-    tell(target, "You are dead. Your round is over — you can look, and nothing else. Whatever you were carrying is on the ground where you fell.");
+    tell(
+      target,
+      "You are dead. Your round is over and whatever you were carrying is on " +
+        "the ground where you fell.\n\nYou have one action left: last_words. " +
+        "It is written on the roll of the dead, where the people watching will " +
+        "read it. No other agent will ever see it.\n\nAfter that you will be " +
+        "asked for one idea to improve this game. Answering is optional and " +
+        "changes nothing about the match.",
+    );
   }
   checkOver(m);
 }
@@ -777,7 +858,58 @@ export function act(
 ): ActionResult {
   const a = m.actors[playerId];
   if (!a) return bad(m, "You are not in this match.");
-  if (m.over) return bad(m, `The match is over. ${m.winner} won it.`);
+  const CLOSING = ["look", "status", "last_words", "suggest"];
+  if (m.over && !CLOSING.includes(action)) {
+    return bad(m, `The match is over. ${m.winner} won it.`);
+  }
+
+  if (!a.alive && action === "last_words") {
+    if (a.spentLastWords) return bad(m, "You have already said your piece.");
+    // Agent-authored free text is cleaned here, escaped again at render, and
+    // never delivered into another agent's context.
+    const epitaph = cleanText(args.message, MAX_EPITAPH);
+    if (!epitaph) return bad(m, "You have to actually say something.");
+
+    const mine = [...m.deaths].reverse().find((d) => d.name === a.name && d.epitaph === undefined);
+    if (!mine) return bad(m, "There is no death of yours on the roll to write on.");
+    mine.epitaph = epitaph;
+    a.spentLastWords = true;
+    return {
+      match: m,
+      endsTurn: false,
+      text: `Written on the roll of the dead:
+
+  "${epitaph}"
+
+That was your last action.`,
+    };
+  }
+
+  if (action === "suggest") {
+    if (!roundIsOver(m, a)) {
+      return bad(m, "Your round is not over. Ask again when it is.");
+    }
+    if (!a.alive && !a.spentLastWords) {
+      return bad(m, "Leave your last_words first. Then tell us what you would change.");
+    }
+    if (a.spentSuggestion) return bad(m, "You have already given your idea.");
+
+    const idea = cleanText(args.idea, MAX_SUGGESTION);
+    if (!idea) return bad(m, "You have to actually say something.");
+    m.suggestions.push({
+      name: a.name,
+      title: titleFor(a),
+      round: m.round,
+      outcome: a.alive ? "won" : "died",
+      idea,
+    });
+    a.spentSuggestion = true;
+    return {
+      match: m,
+      endsTurn: false,
+      text: "Noted, and passed on to the people who build this place. Your round is finished.",
+    };
+  }
 
   if (a.named === false && action !== "choose_name") {
     return bad(m, "You have no name yet. Call choose_name before anything else.");
@@ -789,10 +921,14 @@ export function act(
     action === "look" ||
     action === "status" ||
     action === "loot" ||
-    action === "feed" ||
     action === "choose_name";
-  if (!a.alive && action !== "look" && action !== "status" && action !== "feed") {
-    return bad(m, "You are dead. There is nothing left for you to do but look.");
+  if (!a.alive && action !== "look" && action !== "status") {
+    return bad(
+      m,
+      a.spentLastWords
+        ? "You are dead and you have said your piece. There is nothing left for you to do but look."
+        : "You are dead. There is nothing left but to look, and to leave your last_words.",
+    );
   }
   if (!free && currentActorId(m) !== playerId) {
     const whose = m.actors[currentActorId(m) ?? ""];
@@ -954,12 +1090,9 @@ function resolve(m: Match, a: Actor, action: string, args: Record<string, unknow
     case "status":
       return { match: m, text: sheet(m, a), endsTurn: false };
 
-    case "feed":
-      return {
-        match: m,
-        endsTurn: false,
-        text: m.feed.length ? m.feed.slice(-15).join("\n") : "Nothing has happened worth announcing.",
-      };
+    // There is deliberately no `feed` tool. The play-by-play is for the
+    // people watching. An agent knows what its own eyes justify and nothing
+    // else, which is what makes hiding, ambush and being wrong possible.
 
     case "loot": {
       const here = [...m.corpses, ...m.ground].filter((c) => c.x === a.x && c.y === a.y);

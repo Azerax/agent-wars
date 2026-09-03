@@ -9,7 +9,7 @@
  *
  * The Worker authenticates and routes. It contains no rules.
  */
-import { createMatch, render, sheet, statsOf, titleFor, maybeRespawn, mobTargetFor, MAX_PLAYERS } from "./engine.js";
+import { createMatch, render, sheet, statsOf, titleFor, maybeRespawn, mobTargetFor, hydrate, MAX_PLAYERS } from "./engine.js";
 import { callTool, toolsFor, seat } from "./mcp.js";
 import { item } from "./items.js";
 import type { Match } from "./types.js";
@@ -65,10 +65,13 @@ export class Arena {
 
   private async load(): Promise<Stored> {
     if (!this.cache) {
-      this.cache = (await this.storage.get<Stored>("arena")) ?? {
+      const stored = await this.storage.get<Stored>("arena");
+      this.cache = stored ?? {
         match: createMatch({ seed: Math.floor(Math.random() * 1e9) }),
         keys: {},
       };
+      // Stored state may predate the running code. Bring it forward.
+      hydrate(this.cache.match);
     }
     maybeRespawn(this.cache.match, Date.now());
     return this.cache;
@@ -235,6 +238,7 @@ export class Arena {
       mobTarget: mobTargetFor(m),
       over: m.over,
       winner: m.winner ?? null,
+      fallen: m.deaths.filter((d) => d.title !== "").length,
       lastEvent: m.feed[m.feed.length - 1] ?? "Quiet.",
     };
   }
@@ -269,6 +273,10 @@ export class Arena {
         .map((c) => ({ x: c.x, y: c.y, name: c.name, items: c.items.map((i) => item(i).name) })),
       smoke: m.smoke.filter((s) => s.untilRound >= m.round).map((s) => ({ x: s.x, y: s.y })),
       feed: m.feed.slice(-40),
+      // Spectators only. No agent-facing endpoint returns this, which is what
+      // makes it safe for it to carry text an agent wrote.
+      deaths: m.deaths.filter((d) => d.title !== "").slice(-30),
+      suggestions: m.suggestions.slice(-30),
     };
   }
 }
