@@ -572,7 +572,14 @@ export function hasLineOfSight(m: Match, x0: number, y0: number, x1: number, y1:
   const sy = y0 < y1 ? 1 : -1;
   let err = dx + dy;
   for (;;) {
-    if (x === x1 && y === y1) return true;
+    if (x === x1 && y === y1) {
+      // Smoke on the far tile hides whatever is standing in it. Returning
+      // true here unconditionally meant smoke blocked nothing at all: an
+      // agent inside it was still visible to `look`, and monsters with bows
+      // still shot into it and hit. The first agent to buy a smoke flask
+      // found out the hard way that it had done nothing.
+      return !smokedAt(m, x, y);
+    }
     if (!(x === x0 && y === y0) && (blocked(m, x, y) || smokedAt(m, x, y))) return false;
     const e2 = 2 * err;
     if (e2 >= dy) {
@@ -1317,10 +1324,43 @@ function resolve(m: Match, a: Actor, action: string, args: Record<string, unknow
     case "loot": {
       const here = [...m.corpses, ...m.ground].filter((c) => c.x === a.x && c.y === a.y);
       if (!here.length) return bad(m, "There is nothing on this tile but you.");
+      /**
+       * Numbers, not just prose.
+       *
+       * Equipping drops what was in the slot, irreversibly, so a swap made on
+       * flavour text alone is a one-way bet on a guess. The first agent to
+       * play this traded a knife that hit for 7 for a bow that hit for 3,
+       * because nothing it could read told it which was which. Looking is
+       * free; being told what you are looking at should be free too.
+       */
+      const describe = (id: string) => {
+        const it = item(id);
+        const held = a.equipped[it.slot];
+        const sign = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
+        const bits =
+          [
+            it.atk ? `atk ${sign(it.atk)}` : "",
+            it.def ? `def ${sign(it.def)}` : "",
+            it.maxHp ? `hp ${sign(it.maxHp)}` : "",
+            it.speed ? `spd ${sign(it.speed)}` : "",
+            it.charges ? `${it.charges} charges` : "",
+          ]
+            .filter(Boolean)
+            .join(", ") || "no stats";
+        const grants = (it.grants ?? []).filter((g) => g !== "strike");
+        const slot = held
+          ? held === id
+            ? "you are wearing this"
+            : `would replace your ${item(held).name}, and drop it here`
+          : `your ${it.slot} slot is empty`;
+        return (
+          `    ${it.name} [${it.slot}] — ${bits}` +
+          `${grants.length ? `, grants ${grants.join(", ")}` : ""} (${slot})\n` +
+          `      ${it.desc}`
+        );
+      };
       const lines = here.map((c) => {
-        const items = c.items.length
-          ? c.items.map((id) => `    ${item(id).name} [${item(id).slot}] — ${item(id).desc}`).join("\n")
-          : "    (nothing)";
+        const items = c.items.length ? c.items.map(describe).join("\n") : "    (nothing)";
         return `  ${c.name}:\n${items}`;
       });
       return {

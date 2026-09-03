@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS } from "../dist/royale/engine.js";
+import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS, hasLineOfSight } from "../dist/royale/engine.js";
 import { toolsFor, callTool, seat } from "../dist/royale/mcp.js";
 
 /** Seat an agent and have it name itself, the way a real one must. */
@@ -820,4 +820,40 @@ test("the floor does not burn a bot for fighting", () => {
   }
   assert.equal(bot.stats.lavaTicks, 0, "a bot in a fight is not standing still");
   assert.ok(bot.stats.damageDealt > 0, "and it was in fact fighting");
+});
+
+test("smoke actually hides what is standing in it", () => {
+  const { m, a, b } = twoAgents();
+  const me = m.actors[a];
+  const foe = m.actors[b];
+  foe.x = me.x + 2;
+  foe.y = me.y;
+
+  assert.ok(hasLineOfSight(m, me.x, me.y, foe.x, foe.y), "clear air: visible");
+  assert.match(act(m, a, "look", {}).text, /Mira/);
+
+  // Smoke on the target's own tile hides it — from sight and from arrows.
+  m.smoke.push({ x: foe.x, y: foe.y, untilRound: m.round + 3 });
+  assert.equal(hasLineOfSight(m, me.x, me.y, foe.x, foe.y), false, "smoke on the far tile blocks");
+  assert.ok(!act(m, a, "look", {}).text.includes("Mira at"), "and it is not in the look report");
+
+  me.equipped.weapon = "hunting_bow";
+  giveTurn(m, a);
+  const shot = act(m, a, "shoot", { direction: "east" });
+  assert.ok(shot.isError, "you cannot shoot what you cannot see");
+  assert.equal(foe.stats.damageTaken, 0);
+});
+
+test("looting tells you what a swap would cost you", () => {
+  const { m, a } = twoAgents();
+  const me = m.actors[a];
+  me.equipped.weapon = "bone_knife";
+  m.corpses.push({ x: me.x, y: me.y, name: "a bandit", items: ["hunting_bow", "chain_mail"] });
+
+  const listed = act(m, a, "loot", {}).text;
+  assert.equal(listed.includes("atk"), true, "stats are shown, not just prose");
+  assert.match(listed, /would replace your bone knife/, "a swap says what it displaces");
+  assert.match(listed, /armor slot is empty/, "and an empty slot says so");
+  assert.match(listed, /grants shoot/, "including the verb it would give you");
+  assert.equal(act(m, a, "loot", {}).endsTurn, false, "looking is still free");
 });

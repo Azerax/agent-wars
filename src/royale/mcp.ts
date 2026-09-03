@@ -45,7 +45,7 @@ const GRANTED: Record<string, { desc: string; dir?: boolean }> = {
   hook: { desc: "Drag something up to three tiles away into reach. Limited charges.", dir: true },
   smoke: { desc: "Blind your own tile to everyone, yourself included. Limited charges." },
   mend: { desc: "Patch yourself for 6. Limited charges." },
-  scan: { desc: "Sense everything living within five tiles, walls or no walls." },
+  scan: { desc: "Sense everything living within five tiles, walls or no walls. Reads like looking, but it is an action and ends your turn." },
   divine: { desc: "The compass points to the nearest living enemy." },
 };
 
