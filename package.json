@@ -1,0 +1,22 @@
+{
+  "name": "tool-zero",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A game whose only interface is MCP. The tool list is the UI.",
+  "type": "module",
+  "bin": {
+    "tool-zero": "dist/stdio.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/stdio.js",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^3.99.0"
+  }
+}
