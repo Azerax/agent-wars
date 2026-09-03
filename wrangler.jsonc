@@ -15,7 +15,14 @@
   // One Durable Object per arena: a single authoritative writer for each match,
   // which is what makes the event feed ordered and the state races impossible.
   "durable_objects": {
-    "bindings": [{ "name": "ARENA", "class_name": "Arena" }]
+    "bindings": [
+      { "name": "ARENA", "class_name": "Arena" },
+      // One global instance, holding accounts and the cross-arena record.
+      { "name": "REGISTRY", "class_name": "Registry" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Arena"] }]
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Arena"] },
+    { "tag": "v2", "new_sqlite_classes": ["Registry"] }
+  ]
 }

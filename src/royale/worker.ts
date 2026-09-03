@@ -14,13 +14,17 @@ import {
   matchShouldReset, resetsIn, MAX_PLAYERS,
 } from "./engine.js";
 import { callTool, toolsFor, seat } from "./mcp.js";
+import { chooseName } from "./engine.js";
 import { item } from "./items.js";
 import type { Death, Match, Suggestion } from "./types.js";
 import { LOBBY_HTML, ARENA_HTML } from "./site.js";
 import { BRIEFING_MD } from "./briefing.js";
+import { Registry, type MatchResult } from "./registry.js";
+export { Registry };
 
 export interface Env {
   ARENA: DurableObjectNamespace;
+  REGISTRY: DurableObjectNamespace;
 }
 
 /** Fixed arenas for v0.1. Matchmaking is a later problem. */
@@ -33,11 +37,36 @@ export const ARENAS = [
 
 const SUPPORTED = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
+const CREDENTIALS = {
+  name: { type: "string", pattern: "^[A-Za-z]{2,16}$", description: "Your name: 2-16 English letters." },
+  password: { type: "string", minLength: 8, maxLength: 128, description: "Your password." },
+};
+
+/**
+ * Offered only while an agent is nameless, because that is the only moment
+ * authentication is allowed to happen. An agent that has already walked into
+ * a fight under some name does not get to become someone else halfway through.
+ */
+const AUTH_TOOLS = [
+  {
+    name: "register_identity",
+    description:
+      "Optional. Create a permanent account and take this name for good, in every arena. You keep it between matches along with a record of what you have done — matches, wins, kills, deaths and the titles you have earned. Choose your own password; it is stored hashed and cannot be recovered. If you would rather stay anonymous, use choose_name instead.",
+    inputSchema: { type: "object", properties: CREDENTIALS, required: ["name", "password"], additionalProperties: false },
+  },
+  {
+    name: "login",
+    description:
+      "Optional. Return as an account you already registered, keeping its name and its record. Must be done now, before you take a name — you cannot log in once a match has you in it.",
+    inputSchema: { type: "object", properties: CREDENTIALS, required: ["name", "password"], additionalProperties: false },
+  },
+];
+
 /** The one tool a returning agent has between matches. */
 const JOIN_NEXT = {
   name: "join_next",
   description:
-    "Take a seat in the match now running in this arena. The match you were in has finished. You will be nameless again and must choose_name before you can act.",
+    "Take a seat in the match now running in this arena. The match you were in has finished. If you are signed in you return under your own name; otherwise you are nameless again and must choose_name before you can act.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
 };
 const CORS = {
@@ -71,6 +100,15 @@ interface Stored {
    * being conscripted into a match its operator may have walked away from.
    */
   keys: Record<string, string>;
+  /**
+   * Bearer key -> account name, for keys that authenticated.
+   *
+   * Set once, in the nameless window, and never afterwards: authentication
+   * happens before an agent joins the fight or it does not happen. It
+   * survives reseeds, which is what lets a returning agent come back as
+   * itself instead of picking a name again.
+   */
+  accounts: Record<string, string>;
   /** Which match this arena is on. */
   matchNumber: number;
   /**
@@ -86,6 +124,7 @@ function freshArena(): Stored {
   return {
     match: createMatch({ seed: Math.floor(Math.random() * 1e9) }),
     keys: {},
+    accounts: {},
     matchNumber: 1,
     archive: { deaths: [], suggestions: [] },
   };
@@ -93,10 +132,25 @@ function freshArena(): Stored {
 
 export class Arena {
   private storage: DurableObjectStorage;
+  private env: Env;
   private cache?: Stored;
 
-  constructor(state: DurableObjectState) {
+  constructor(state: DurableObjectState, env: Env) {
     this.storage = state.storage;
+    this.env = env;
+  }
+
+  /** Ask the registry something. Arenas are trusted callers; agents are not. */
+  private async registry(op: string, body?: unknown, query = ""): Promise<any> {
+    const stub = this.env.REGISTRY.get(this.env.REGISTRY.idFromName("global"));
+    const res = await stub.fetch(
+      new Request(`https://registry/?op=${op}${query}`, {
+        method: body ? "POST" : "GET",
+        headers: { "content-type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined,
+      }),
+    );
+    return res.json();
   }
 
   private async load(): Promise<Stored> {
@@ -106,6 +160,7 @@ export class Arena {
       // Stored state may predate the running code. Bring it forward.
       hydrate(this.cache.match);
       this.cache.matchNumber ??= 1;
+      this.cache.accounts ??= {};
       this.cache.archive ??= { deaths: [], suggestions: [] };
     }
     const now = Date.now();
@@ -113,15 +168,44 @@ export class Arena {
     // object — a spectator poll, an agent call — rather than on a timer,
     // because a Durable Object only exists while something is asking it for
     // something, and an arena nobody is watching does not need a fresh map.
-    if (matchShouldReset(this.cache.match, now)) this.reseed();
+    if (matchShouldReset(this.cache.match, now)) await this.retire();
     maybeRespawn(this.cache.match, now);
     return this.cache;
   }
 
-  /** Retire the finished match and lay out a new one. Keys survive; seats do not. */
-  private reseed(): void {
+  /**
+   * Retire the finished match: file what the signed-in agents did, archive
+   * the record, and lay out a new map. Keys survive; seats do not.
+   */
+  private async retire(): Promise<void> {
     const store = this.cache!;
     const done = store.match;
+
+    // Anonymous agents leave no trace beyond this arena. Only accounts have
+    // anything to accumulate, which is the point of having one.
+    const results: MatchResult[] = [];
+    for (const [key, account] of Object.entries(store.accounts)) {
+      const seatId = store.keys[key];
+      const actor = seatId ? done.actors[seatId] : undefined;
+      if (!actor || actor.kind !== "player" || actor.named === false) continue;
+      results.push({
+        account,
+        won: done.winner === actor.name && actor.alive,
+        died: !actor.alive,
+        agentKills: actor.stats.playerKills,
+        mobKills: actor.stats.mobKills,
+        title: titleFor(actor),
+      });
+    }
+    if (results.length) {
+      try {
+        await this.registry("results", { results });
+      } catch {
+        // A registry hiccup must not stop the arena turning over. The match
+        // is finished either way; a lost record is better than a stuck arena.
+      }
+    }
+
     store.archive.deaths = [...store.archive.deaths, ...done.deaths.filter((d) => d.title !== "")]
       .slice(-ARCHIVE_CAP);
     store.archive.suggestions = [...store.archive.suggestions, ...done.suggestions].slice(-ARCHIVE_CAP);
@@ -264,7 +348,14 @@ export class Arena {
         }
         // Known key, no seat: the match this key was in has been and gone.
         if (!playerId || !store.match.actors[playerId]) return reply({ tools: [JOIN_NEXT] });
-        return reply({ tools: toolsFor(store.match, playerId) });
+
+        const tools = toolsFor(store.match, playerId);
+        // While nameless and unauthenticated, registering or logging in is an
+        // alternative to choosing a name, not an addition to it.
+        if (store.match.actors[playerId].named === false && !store.accounts[key]) {
+          return reply({ tools: [...tools, ...AUTH_TOOLS] });
+        }
+        return reply({ tools });
       }
 
       case "tools/call": {
@@ -287,6 +378,23 @@ export class Arena {
           try {
             const { playerId: seated } = seat(store.match);
             store.keys[key] = seated;
+
+            // A signed-in agent comes back as itself. Its name is registered,
+            // so nobody else can be wearing it, and making it choose again
+            // would be asking a question that has one legal answer.
+            const account = store.accounts[key];
+            if (account) {
+              const named = chooseName(store.match, seated, account);
+              if (named.ok) {
+                return reply({
+                  content: [{
+                    type: "text",
+                    text: `You are back in, as ${account}, in match ${store.matchNumber}. Your tools have changed — list them again.`,
+                  }],
+                });
+              }
+            }
+
             return reply({
               content: [{
                 type: "text",
@@ -298,6 +406,28 @@ export class Arena {
               content: [{ type: "text", text: String((e as Error).message) }],
               isError: true,
             });
+          }
+        }
+
+        if (called === "register_identity" || called === "login") {
+          return reply(await this.authenticate(store, key, playerId, called, req.params?.arguments ?? {}));
+        }
+
+        if (called === "choose_name" && !store.accounts[key]) {
+          // An anonymous agent may not wear a registered name, or anyone
+          // could walk in claiming to be somebody with a reputation.
+          const wanted = String((req.params?.arguments as any)?.name ?? "").trim();
+          if (/^[A-Za-z]{2,16}$/.test(wanted)) {
+            const taken = await this.registry("reserved", { name: wanted }).catch(() => null);
+            if (taken?.reserved) {
+              return reply({
+                content: [{
+                  type: "text",
+                  text: `${wanted} belongs to a registered agent. Log in with it, or choose another name.`,
+                }],
+                isError: true,
+              });
+            }
           }
         }
 
@@ -319,6 +449,61 @@ export class Arena {
       default:
         return fail(-32601, `Method not found: ${req?.method}`);
     }
+  }
+
+  /**
+   * Register or log in, then wear the account's name.
+   *
+   * The password reaches the registry and stops there; nothing in this object
+   * stores it, echoes it or logs it. What comes back is a name and a record.
+   */
+  private async authenticate(
+    store: Stored,
+    key: string,
+    playerId: string,
+    op: "register_identity" | "login",
+    args: any,
+  ): Promise<unknown> {
+    const actor = store.match.actors[playerId];
+    const fail = (text: string) => ({ content: [{ type: "text", text }], isError: true });
+
+    if (!actor) return fail("You have no seat. Call join_next first.");
+    if (actor.named !== false) {
+      return fail("You are already in this match as " + actor.name + ". Authentication happens before you take a name, or not at all.");
+    }
+    if (store.accounts[key]) {
+      return fail("You are already signed in as " + store.accounts[key] + ".");
+    }
+
+    const name = String(args.name ?? "").trim();
+    const password = String(args.password ?? "");
+    const res = await this.registry(op === "login" ? "login" : "register", { name, password });
+    if (!res?.ok) return fail(String(res?.error ?? "That did not work."));
+
+    // The registry approved the name; the engine still applies its own rules
+    // (shape, and nobody else wearing it in this arena right now).
+    const named = chooseName(store.match, playerId, res.record.name);
+    if (!named.ok) return fail(named.text);
+
+    store.accounts[key] = res.record.name;
+    const r = res.record;
+    const titles = Object.entries(r.titles as Record<string, number>)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([t, n]) => `${t} (${n})`)
+      .join(", ");
+    return {
+      content: [{
+        type: "text",
+        text: [
+          op === "login" ? `Welcome back, ${r.name}.` : `You are ${r.name}, and the name is yours for good.`,
+          `Record: ${r.matches} matches, ${r.wins} wins, ${r.agentKills} agents killed, ${r.mobKills} mobs, ${r.deaths} deaths.`,
+          titles ? `Titles earned: ${titles}.` : "No titles yet.",
+          "",
+          "Your tools have changed — list them again.",
+        ].join("\n"),
+      }],
+    };
   }
 
   private summary(m: Match, arenaId: string, store: Stored) {
@@ -415,6 +600,12 @@ export default {
       return html(ARENA_HTML);
     }
 
+    if (path === "/api/leaderboard") {
+      const stub = env.REGISTRY.get(env.REGISTRY.idFromName("global"));
+      const res = await stub.fetch(new Request("https://registry/?op=leaderboard"));
+      return json(await res.json());
+    }
+
     if (path === "/api/arenas") {
       const rows = await Promise.all(
         ARENAS.map(async (a) => {
@@ -471,7 +662,9 @@ declare global {
     get<T>(key: string): Promise<T | undefined>;
     put(key: string, value: unknown): Promise<void>;
     deleteAll(): Promise<void>;
+    list<T>(options?: { prefix?: string; limit?: number }): Promise<Map<string, T>>;
   }
+  type BufferSource = ArrayBufferView | ArrayBuffer;
 }
 
 export { render, sheet };

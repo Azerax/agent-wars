@@ -597,3 +597,16 @@ test("hydrate gives an old finished match an end time rather than resetting it i
   assert.ok(m.endedAt >= before, "a match that ended before we tracked it gets the full window");
   assert.equal(matchShouldReset(m, Date.now()), false);
 });
+
+test("only the living are untouched", () => {
+  const { m, a } = twoAgents();
+  const me = m.actors[a];
+  me.stats.steps = 20;
+  me.stats.damageTaken = 0;
+  assert.equal(titleFor(me), "the Untouched");
+
+  // Killed by the storm or the floor: no attacker ever landed a blow, but
+  // "untouched" is not the word for it.
+  me.alive = false;
+  assert.equal(titleFor(me), "the Unlucky");
+});

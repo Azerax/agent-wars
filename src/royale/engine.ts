@@ -1318,7 +1318,10 @@ export function titleFor(a: Actor): string {
   if (s.mobKills >= 5) return "the Hunter";
   if (s.loots >= 4) return "the Magpie";
   if (s.steps >= 30 && s.damageDealt === 0) return "the Fleet";
-  if (s.damageTaken === 0 && s.steps >= 10) return "the Untouched";
+  // Only the living are untouched. Dying without a scratch means the storm or
+  // the floor got you, which is not the same boast at all.
+  if (a.alive && s.damageTaken === 0 && s.steps >= 10) return "the Untouched";
+  if (!a.alive && s.damageTaken === 0) return "the Unlucky";
   if (s.mobKills >= 1) return "the Blooded";
   return "the Unproven";
 }
