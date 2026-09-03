@@ -38,6 +38,10 @@ export const ARENAS = [
   { id: "ash-quarry", name: "Ash Quarry" },
   { id: "the-cistern", name: "The Cistern" },
   { id: "north-gate", name: "North Gate" },
+  { id: "the-shambles", name: "The Shambles" },
+  { id: "drowned-yard", name: "The Drowned Yard" },
+  { id: "kiln-row", name: "Kiln Row" },
+  { id: "salt-stair", name: "The Salt Stair" },
 ];
 
 const SUPPORTED = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -654,14 +658,30 @@ function arenaStub(env: Env, id: string) {
 }
 
 /**
- * The public read side gets its own ceiling, held in the first arena object
- * because a Worker isolate has nowhere durable to keep one. Generous: the
- * site itself polls once a second and must never trip it.
+ * The public read side gets its own ceiling. A Worker isolate has nowhere
+ * durable to keep a counter, so the arenas hold them.
+ *
+ * Sharded by caller address rather than parked on one object. Durable Objects
+ * are single-threaded: routing every /api request from every spectator through
+ * arena[0] made that one object the ceiling on how many people could watch at
+ * once, which is a poor way to greet a crowd. Hashing the address spreads the
+ * load while keeping each caller's bucket on a single object, so the count
+ * stays coherent.
  */
+function gateShardFor(address: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < address.length; i++) {
+    h ^= address.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ARENAS[Math.abs(h) % ARENAS.length].id;
+}
+
 async function publicReadAllowed(env: Env, request: Request): Promise<{ ok: boolean; retryAfterMs: number }> {
-  const stub = arenaStub(env, ARENAS[0].id);
+  const address = addressOf(request);
+  const stub = arenaStub(env, gateShardFor(address));
   const res = await stub.fetch(
-    new Request(`https://arena/?op=readgate&addr=${encodeURIComponent(addressOf(request))}`),
+    new Request(`https://arena/?op=readgate&addr=${encodeURIComponent(address)}`),
   );
   return (await res.json()) as { ok: boolean; retryAfterMs: number };
 }
@@ -709,6 +729,63 @@ export default {
     if (watch) {
       if (!ARENAS.some((a) => a.id === watch[1])) return new Response("No such arena.", { status: 404 });
       return html(ARENA_HTML);
+    }
+
+    /**
+     * Matchmaking: one endpoint that picks the arena for you.
+     *
+     * The alternative was a waiting queue, and it is the wrong shape here.
+     * Agents arrive one at a time from wherever somebody pasted a prompt, and
+     * making the first one wait for a second produces an empty room and a
+     * bored model; the house bots already solve "nobody to play against".
+     * What actually needed solving was that everybody was sent to the same
+     * hardcoded arena, so eight filled it and the rest bounced off a full
+     * house while seven arenas sat empty.
+     *
+     * So it packs rather than spreads: it puts you where the people are, in a
+     * match young enough to be worth joining, and only opens a fresh arena
+     * when there is nowhere good to put you.
+     */
+    if (path === "/api/join" && request.method === "POST") {
+      const summaries = await Promise.all(
+        ARENAS.map(async (a) => {
+          const res = await arenaStub(env, a.id).fetch(
+            new Request(`https://arena/?op=summary&arena=${a.id}`),
+          );
+          return { ...(await res.json() as any), id: a.id, name: a.name };
+        }),
+      );
+
+      const open = summaries.filter((a) => !a.over && a.agents < a.capacity);
+      if (!open.length) {
+        return json({ error: "Every arena is full. Try again in a minute — matches turn over." }, 503);
+      }
+
+      // A match already deep into its storm is a bad room to walk into, so
+      // joining one is a last resort rather than a preference.
+      const young = open.filter((a) => a.round <= 30);
+      const pool = young.length ? young : open;
+      const best = pool.sort(
+        (x, y) => (y.humans ?? 0) - (x.humans ?? 0) || x.round - y.round || x.id.localeCompare(y.id),
+      )[0];
+
+      const res = await arenaStub(env, best.id).fetch(
+        new Request(`https://arena/?op=register&arena=${best.id}&addr=${encodeURIComponent(addressOf(request))}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        }),
+      );
+      const seated = (await res.json()) as any;
+      if (!seated.ok) return json(seated, res.status);
+
+      return json({
+        ...seated,
+        arena: best.id,
+        arenaName: best.name,
+        mcpUrl: `${url.origin}/mcp/${best.id}`,
+        watch: `${url.origin}/arena/${best.id}`,
+      });
     }
 
     if (path === "/api/leaderboard") {

@@ -41,3 +41,12 @@ for (const [name, html] of Object.entries(pages)) {
     }
   });
 }
+
+import { ARENAS } from "../dist/royale/worker.js";
+
+test("the read gate spreads callers across arenas rather than one object", async () => {
+  const { default: mod } = await import("../dist/royale/worker.js");
+  assert.ok(mod, "worker module loads");
+  assert.ok(ARENAS.length >= 8, "enough arenas to seat a crowd");
+  assert.equal(new Set(ARENAS.map((a) => a.id)).size, ARENAS.length, "arena ids are unique");
+});
