@@ -610,3 +610,79 @@ test("only the living are untouched", () => {
   me.alive = false;
   assert.equal(titleFor(me), "the Unlucky");
 });
+
+test("a lone agent is not squeezed to death by a match that cannot end", () => {
+  const m = createMatch({ seed: 15 });
+  const a = enter(m, "Alone");
+  assert.equal(m.started, false, "one agent is not a match");
+
+  // Run well past several storm intervals.
+  for (let i = 0; i < 60; i++) {
+    giveTurn(m, a);
+    callTool(m, a, "pass", {});
+  }
+
+  assert.deepEqual(
+    m.storm,
+    { x0: 0, y0: 0, x1: m.config.width - 1, y1: m.config.height - 1 },
+    "the storm must not close on a match that has not started",
+  );
+  assert.equal(m.actors[a].stats.damageTaken, 0, "and it must not be taking storm damage");
+  assert.equal(m.actors[a].stats.lavaTicks, 0, "nor burning on a floor that is not lava yet");
+  assert.equal(m.actors[a].alive, true, "a lone agent must survive waiting");
+  assert.equal(m.over, false);
+
+  // `wait` says why nothing is happening rather than leaving it to guess.
+  const waited = act(m, a, "wait", {});
+  assert.match(waited.text, /has not started/);
+
+  // A second agent starts it, and only then does the storm begin.
+  enter(m, "Second");
+  assert.equal(m.started, true);
+  for (let i = 0; i < 12; i++) {
+    const cur = m.order[m.turnIndex];
+    if (m.actors[cur]?.kind === "player") callTool(m, cur, "pass", {});
+    else break;
+  }
+  assert.ok(m.round > 1);
+});
+
+test("mobs walk out of the storm instead of standing in it", () => {
+  const m = createMatch({ seed: 16 });
+  enter(m, "One");
+  enter(m, "Two");
+  assert.equal(m.started, true);
+
+  // Squeeze the safe ground into a corner and put a mob well outside it.
+  m.storm = { x0: 0, y0: 0, x1: 3, y1: 3 };
+  const mob = Object.values(m.actors).find((x) => x.kind === "monster");
+  mob.x = 10;
+  mob.y = 10;
+  mob.hp = 100;
+  const before = Math.abs(mob.x - 3) + Math.abs(mob.y - 3);
+
+  for (let i = 0; i < 12; i++) {
+    const cur = m.order[m.turnIndex];
+    if (m.actors[cur]?.kind === "player") callTool(m, cur, "pass", {});
+  }
+  const after = Math.abs(mob.x - 3) + Math.abs(mob.y - 3);
+  assert.ok(after < before, `mob should head for safety: was ${before} away, now ${after}`);
+});
+
+test("the feed carries the fight, not just the weather", () => {
+  const { m, a, b } = twoAgents();
+  const foe = m.actors[b];
+  foe.x = m.actors[a].x + 1;
+  foe.y = m.actors[a].y;
+  foe.hp = 200;
+  m.feed.length = 0;
+
+  giveTurn(m, a);
+  callTool(m, a, "strike", { direction: "east" });
+  assert.ok(m.feed.some((l) => /strikes Mira for \d+/.test(l)), `expected a blow in the feed, got ${JSON.stringify(m.feed)}`);
+
+  m.corpses.push({ x: m.actors[a].x, y: m.actors[a].y, name: "a husk", items: ["rusted_axe"] });
+  giveTurn(m, a);
+  callTool(m, a, "take", { item: "rusted_axe" });
+  assert.ok(m.feed.some((l) => /takes the rusted axe/.test(l)), "looting should be visible to spectators");
+});

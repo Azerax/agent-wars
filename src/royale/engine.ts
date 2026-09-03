@@ -576,6 +576,14 @@ function damage(m: Match, attacker: Actor | undefined, target: Actor, amount: nu
 
   // The attacker is told directly, in the tool result. An agent that cannot see
   // the outcome of its own swing cannot play, so this never goes to the inbox.
+  // The feed is read only by the website, so it can carry everything the
+  // agents themselves are not allowed to see. It was previously so sparse
+  // that a whole match read as three lines about the weather.
+  m.feed.push(
+    `${subject} ${how}s ${target.name} for ${dealt}` +
+      (target.hp > 0 ? ` (${target.hp}/${statsOf(target).maxHp} left).` : "."),
+  );
+
   const report = `You ${how} ${target.name} for ${dealt}.`;
   if (target.hp <= 0) {
     kill(m, attacker, target);
@@ -668,6 +676,11 @@ function advanceTurn(m: Match): void {
 }
 
 function applyStorm(m: Match): void {
+  // A match that has not started has no storm. Without this a lone agent
+  // waiting for an opponent is squeezed to death by a match that checkOver
+  // can never end, which is precisely what happened the first time anyone
+  // sat in an arena on their own.
+  if (!m.started || m.over) return;
   const { stormEvery } = m.config;
   if (m.round % stormEvery !== 1 || m.round === 1) return;
   const s = m.storm;
@@ -690,8 +703,9 @@ function outsideStorm(m: Match, a: Actor): boolean {
 }
 
 function stormTick(m: Match, a: Actor): void {
-  if (!outsideStorm(m, a)) return;
+  if (!m.started || !outsideStorm(m, a)) return;
   a.hp -= m.config.stormDamage;
+  m.feed.push(`The storm is on ${a.name} for ${m.config.stormDamage}.`);
   tell(a, `The storm is on you. You lose ${m.config.stormDamage} HP and are on ${Math.max(0, a.hp)}.`);
   if (a.hp <= 0) kill(m, undefined, a);
 }
@@ -706,7 +720,10 @@ function stormTick(m: Match, a: Actor): void {
  * combat. Bracing in a corner is still turtling and still costs.
  */
 function applyLava(m: Match, a: Actor, busy: boolean): void {
-  if (!a.alive) return;
+  // Same rule as the storm: the hazards belong to a running match. An agent
+  // waiting alone for an opponent should not have to jog on the spot to stay
+  // alive in a match that has not begun.
+  if (!a.alive || !m.started) return;
   if (busy) {
     a.stillTurns = 0;
     return;
@@ -720,6 +737,7 @@ function applyLava(m: Match, a: Actor, busy: boolean): void {
 
   a.hp -= LAVA_DAMAGE;
   a.stats.lavaTicks += 1;
+  m.feed.push(`The floor burns ${a.name} for ${LAVA_DAMAGE} — ${a.stillTurns} turns without moving.`);
   tell(a, `The floor burns you for ${LAVA_DAMAGE}. You have not moved in ${a.stillTurns} turns. You are on ${Math.max(0, a.hp)} HP.`);
   if (a.hp <= 0) {
     m.feed.push(`${a.name} burns to death standing still.`);
@@ -791,6 +809,21 @@ function monsterTurn(m: Match, a: Actor): void {
   a.lastActedRound = m.round;
 
   const rand = rngFrom(m.config.seed + m.round * 131 + a.id.length * 17 + a.x * 3 + a.y);
+  // Out of the safe ground, getting back to it is the only priority. Mobs
+  // used to hunt straight through a closing storm and stand there dying in
+  // it, which looked exactly as stupid as it was.
+  if (m.started && outsideStorm(m, a)) {
+    const s = m.storm;
+    const refuge = {
+      x: Math.min(Math.max(a.x, s.x0), s.x1),
+      y: Math.min(Math.max(a.y, s.y0), s.y1),
+    };
+    const out = stepToward(m, a, refuge);
+    const moved = out ? step(m, a, out[0], out[1]) : false;
+    applyLava(m, a, moved);
+    if (moved) return;
+  }
+
   // Everything hunts, but only what has a mind for it hunts across the map.
   // Husks are mindless and slow; they come for you once you are near enough to
   // notice. Without that, twenty pursuers converge on one agent at once and the
@@ -1143,6 +1176,7 @@ function resolve(m: Match, a: Actor, action: string, args: Record<string, unknow
       pile.items = pile.items.filter((i) => i !== id);
       a.stats.loots += 1;
       const displaced = equip(a, it);
+      m.feed.push(`${a.name} takes the ${it.name}${displaced ? `, dropping the ${item(displaced).name}` : ""}.`);
       if (displaced) {
         // One item per slot. What you were wearing goes on the floor here.
         pile.items.push(displaced);
@@ -1163,8 +1197,14 @@ function resolve(m: Match, a: Actor, action: string, args: Record<string, unknow
     }
 
     case "wait": {
+      // A lone agent is always on the clock, so this branch is the only one it
+      // ever sees. It has to carry the explanation too, or the arena looks
+      // broken rather than empty.
+      const lobby = m.started
+        ? ""
+        : " The match has not started: it needs a second agent before the storm closes, before the floor burns, and before anyone can win. The mobs are real in the meantime.";
       const cur = currentActorId(m);
-      if (cur === a.id) return { match: m, text: "It is your turn. Act.", endsTurn: false };
+      if (cur === a.id) return { match: m, text: "It is your turn. Act." + lobby, endsTurn: false };
       const ahead = queueAhead(m, a.id);
       return {
         match: m,
