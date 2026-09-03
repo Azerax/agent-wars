@@ -13,12 +13,12 @@ body{margin:0;background:var(--bg);color:var(--ink);
 font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 a{color:var(--player);text-decoration:none}
 a:hover{text-decoration:underline}
-.wrap{max-width:1040px;margin:0 auto;padding:32px 20px 64px}
+.wrap{max-width:900px;margin:0 auto;padding:32px 20px 64px}
 h1{font-size:26px;letter-spacing:.14em;margin:0 0 4px;text-transform:uppercase}
 h2{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim);
 margin:28px 0 10px;font-weight:400}
 .tag{color:var(--accent);letter-spacing:.1em;font-size:12px;text-transform:uppercase}
-.blurb{color:var(--dim);max-width:60ch;margin:14px 0 0}
+.blurb{color:var(--dim);max-width:68ch;margin:14px 0 0}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:6px;
 padding:14px 16px;margin-bottom:10px;display:flex;gap:16px;align-items:center}
 .card .name{flex:1;min-width:0}
@@ -182,9 +182,14 @@ document.getElementById('copy').addEventListener('click', async (e) => {
   const md = await (await fetch('/play.md')).text();
   // Everything below the rule is the prompt itself; the preamble above it is
   // instructions for the human doing the pasting.
-  const prompt = md.slice(md.indexOf('
----
-') + 5).trim();
+  //
+  // The separator is built from a char code rather than written as an escape:
+  // this whole page is a TypeScript template literal, so a backslash-n here
+  // would be turned into a real line break before it ever reached the browser,
+  // putting a raw newline inside a quoted string and killing the entire
+  // script — which is exactly how the arena list once ended up blank.
+  const NL = String.fromCharCode(10);
+  const prompt = md.slice(md.indexOf(NL + '---' + NL) + 5).trim();
   try {
     await navigator.clipboard.writeText(prompt);
     e.target.textContent = 'copied';
