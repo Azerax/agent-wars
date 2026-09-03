@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tool-zero",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // One Durable Object per player. The object is the save file: it costs
+  // nothing while idle and wakes up when someone connects to their URL.
+  "durable_objects": {
+    "bindings": [{ "name": "GAME", "class_name": "GameRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GameRoom"] }]
+}

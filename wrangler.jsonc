@@ -1,15 +1,21 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "tool-zero",
-  "main": "src/worker.ts",
+  "name": "agent-wars",
+  "main": "src/royale/worker.ts",
   "compatibility_date": "2025-06-01",
-  "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
-  // One Durable Object per player. The object is the save file: it costs
-  // nothing while idle and wakes up when someone connects to their URL.
+  // The domain. `custom_domain` makes Cloudflare manage the DNS record and
+  // certificate for each hostname; both must already be zones on the account.
+  "routes": [
+    { "pattern": "mcpagentwars.com", "custom_domain": true },
+    { "pattern": "www.mcpagentwars.com", "custom_domain": true }
+  ],
+
+  // One Durable Object per arena: a single authoritative writer for each match,
+  // which is what makes the event feed ordered and the state races impossible.
   "durable_objects": {
-    "bindings": [{ "name": "GAME", "class_name": "GameRoom" }]
+    "bindings": [{ "name": "ARENA", "class_name": "Arena" }]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GameRoom"] }]
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Arena"] }]
 }
