@@ -1,5 +1,6 @@
 import { COMMON, RARE, UNCOMMON, item } from "./items.js";
 import { pick, range, rngFrom } from "./rng.js";
+import { botsIn, botsWanted, isBot, nextBotName } from "./bots.js";
 import {
   DIRS,
   SLOTS,
@@ -438,6 +439,57 @@ export function chooseName(m: Match, playerId: string, raw: string): { ok: boole
 Your tools have changed — list them again.` };
 }
 
+/**
+ * Top the arena up with house agents so a lone visitor has a match.
+ *
+ * Called after anyone takes a seat. Returns how many were added.
+ */
+export function fillWithBots(m: Match): number {
+  if (m.over) return 0;
+  let added = 0;
+  for (let guard = 0; guard < MAX_PLAYERS; guard++) {
+    const seated = seatsTaken(m);
+    if (seated >= MAX_PLAYERS) break;
+    if (botsWanted(m, seated, botsIn(m).length) <= 0) break;
+    const name = nextBotName(m);
+    if (!name) break;
+
+    const rand = rngFrom(m.config.seed + seated * 5171 + added);
+    const { x, y } = freeTile(m, rand);
+    const id = `bot_${name.toLowerCase()}`;
+    m.actors[id] = {
+      id,
+      kind: "player",
+      name,
+      named: true,
+      isBot: true,
+      x,
+      y,
+      hp: 30,
+      baseMaxHp: 30,
+      baseAtk: 3,
+      baseDef: 1,
+      baseSpeed: 5,
+      alive: true,
+      equipped: {},
+      charges: {},
+      bracedUntilRound: 0,
+      kills: 0,
+      lastActedRound: 0,
+      stillTurns: 0,
+      stats: newStats(),
+      inbox: [],
+    };
+    m.feed.push(`${name} steps in to make up the numbers.`);
+    added += 1;
+  }
+  if (added) {
+    rebuildOrder(m);
+    topUpMobs(m, rngFrom(m.config.seed + m.mobSerial * 13));
+  }
+  return added;
+}
+
 /** Turn order is by speed, so gear that changes speed changes the order. */
 function rebuildOrder(m: Match): void {
   const current = m.order[m.turnIndex];
@@ -667,11 +719,14 @@ function advanceTurn(m: Match): void {
     }
     const a = m.actors[m.order[m.turnIndex]];
     if (!a || !a.alive) continue;
-    if (a.kind === "player") {
+    if (a.kind === "player" && !isBot(a)) {
       stormTick(m, a);
       return;
     }
-    monsterTurn(m, a);
+    // Bots and monsters are resolved by whoever asked, so neither can ever be
+    // the reason an arena stops moving.
+    if (isBot(a)) botTurn(m, a);
+    else monsterTurn(m, a);
   }
 }
 
@@ -863,6 +918,116 @@ function monsterTurn(m: Match, a: Actor): void {
     moved = step(m, a, dx, dy);
   }
   applyLava(m, a, moved);
+}
+
+/**
+ * A house agent's turn.
+ *
+ * Deliberately a short list of rules in priority order rather than anything
+ * clever. It exists to be a real opponent — one that picks up gear and uses
+ * the verbs that gear grants — and to be beatable by an agent that thinks
+ * about it, which is the whole point of putting it there.
+ */
+function botTurn(m: Match, a: Actor): void {
+  stormTick(m, a);
+  if (!a.alive || m.over) return;
+  a.lastActedRound = m.round;
+
+  const rand = rngFrom(m.config.seed + m.round * 977 + a.x * 31 + a.y);
+  const from = { x: a.x, y: a.y };
+  const blood = a.stats.damageDealt + a.stats.damageTaken;
+
+  /**
+   * Close the turn with the same "busy" test players get: moved, or gave or
+   * took a blow. Hardcoding `false` here burned bots alive for the crime of
+   * standing next to something and hitting it, which is exactly the mistake
+   * the player path had already been fixed for.
+   */
+  const done = () =>
+    applyLava(
+      m,
+      a,
+      a.x !== from.x || a.y !== from.y || a.stats.damageDealt + a.stats.damageTaken > blood,
+    );
+  const verbs = new Set(grantedActions(a));
+  const enemies = Object.values(m.actors).filter((t) => t.alive && t.id !== a.id);
+
+  // 1. Out of the safe ground, nothing else matters.
+  if (m.started && outsideStorm(m, a)) {
+    const s = m.storm;
+    const refuge = {
+      x: Math.min(Math.max(a.x, s.x0), s.x1),
+      y: Math.min(Math.max(a.y, s.y0), s.y1),
+    };
+    const out = stepToward(m, a, refuge);
+    if (out && step(m, a, out[0], out[1])) return done();
+  }
+
+  // 2. Badly hurt, with something to do about it.
+  const st = statsOf(a);
+  const kit = equippedItems(a).find((it) => (it.grants ?? []).includes("mend"));
+  if (kit && a.hp < st.maxHp * 0.4 && (a.charges[kit.id] ?? 0) > 0) {
+    resolve(m, a, "mend", {});
+    return done();
+  }
+
+  // 3. Something in reach. Prefer the widest swing available.
+  const adjacent = Object.entries(DIRS).filter(([, [dx, dy]]) => actorAt(m, a.x + dx, a.y + dy));
+  if (adjacent.length) {
+    if (verbs.has("cleave") && adjacent.length > 1) {
+      resolve(m, a, "cleave", {});
+    } else {
+      const [dir] = adjacent[0];
+      const melee = verbs.has("stab") ? "stab" : "strike";
+      resolve(m, a, melee, { direction: dir });
+    }
+    return done();
+  }
+
+  // 4. A clear shot at two or four tiles, if the gear allows one.
+  for (const reach of [{ verb: "shoot", range: 4 }, { verb: "thrust", range: 2 }]) {
+    if (!verbs.has(reach.verb)) continue;
+    for (const [dir, [dx, dy]] of Object.entries(DIRS)) {
+      for (let i = 1; i <= reach.range; i++) {
+        const t = actorAt(m, a.x + dx * i, a.y + dy * i);
+        if (!t) continue;
+        if (hasLineOfSight(m, a.x, a.y, t.x, t.y)) {
+          resolve(m, a, reach.verb, { direction: dir });
+          return done();
+        }
+        break;
+      }
+    }
+  }
+
+  // 5. Standing on something worth wearing.
+  const pile = [...m.corpses, ...m.ground].find((c) => c.x === a.x && c.y === a.y && c.items.length);
+  if (pile) {
+    const wanted = pile.items.find((id) => {
+      const it = item(id);
+      const held = a.equipped[it.slot];
+      if (!held) return true;
+      // A crude but honest comparison: take it if it hits harder or holds up
+      // better than what is already in the slot.
+      const now = item(held);
+      return (it.atk ?? 0) + (it.def ?? 0) > (now.atk ?? 0) + (now.def ?? 0);
+    });
+    if (wanted) {
+      resolve(m, a, "take", { item: wanted });
+      return done();
+    }
+  }
+
+  // 6. Otherwise go and find something: loot first, then the nearest body.
+  const loot = [...m.corpses, ...m.ground].filter((c) => c.items.length);
+  const goals = [...loot, ...enemies].sort((p, q) => dist(a, p) - dist(a, q));
+  const goal = goals[0];
+  const next = goal ? stepToward(m, a, goal) : null;
+  if (!(next && step(m, a, next[0], next[1]))) {
+    const [dx, dy] = pick(rand, Object.values(DIRS));
+    step(m, a, dx, dy);
+  }
+  done();
 }
 
 // ---------------------------------------------------------------------------
@@ -1227,7 +1392,7 @@ function resolve(m: Match, a: Actor, action: string, args: Record<string, unknow
         // which the naming rules already restrict to sixteen bare letters.
         tell(
           t,
-          `${a.name} ${titleFor(a)}, ${dist(a, t)} tiles ${bearing(t, a)}, ${SIGNAL_TEXT[token]}. ` +
+          `${a.name} ${titleFor(a)}${isBot(a) ? " [house agent]" : ""}, ${dist(a, t)} tiles ${bearing(t, a)}, ${SIGNAL_TEXT[token]}. ` +
             "What it means by that, and whether it is true, is for you to judge.",
         );
       }
@@ -1323,7 +1488,8 @@ export function render(m: Match, a: Actor): string {
     lines.push("", "You can see:");
     for (const t of visible) {
       const gear = equippedItems(t).map((i) => i.name).join(", ") || "nothing";
-      const who = t.kind === "player" ? `${t.name} ${titleFor(t)}` : t.name;
+      const who =
+        t.kind === "player" ? `${t.name} ${titleFor(t)}${isBot(t) ? " [house agent]" : ""}` : t.name;
       lines.push(`  ${who} at (${t.x}, ${t.y}), ${dist(a, t)} away, ${bearing(a, t)}. Carrying: ${gear}.`);
     }
   } else {

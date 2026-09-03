@@ -1,4 +1,4 @@
-import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, render, sheet, start, SIGNALS, MAX_EPITAPH, MAX_SUGGESTION, roundIsOver } from "./engine.js";
+import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, render, sheet, start, fillWithBots, SIGNALS, MAX_EPITAPH, MAX_SUGGESTION, roundIsOver } from "./engine.js";
 import { equippedItems } from "./engine.js";
 import type { Match } from "./types.js";
 
@@ -192,6 +192,9 @@ export function callTool(
 /** Take an unnamed seat. The agent names itself once it connects. */
 export function seat(m: Match): { match: Match; playerId: string } {
   const joined = join(m);
+  // The house makes up the numbers so a lone agent has something to fight and
+  // a match it can actually win.
+  fillWithBots(joined.match);
   const players = Object.values(joined.match.actors).filter((a) => a.kind === "player");
   if (players.length >= 2 && !joined.match.started) start(joined.match);
   return joined;

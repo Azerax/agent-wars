@@ -291,7 +291,8 @@ async function tick() {
   document.getElementById('roster').innerHTML = s.actors
     .filter(a => a.kind === 'player')
     .map(a => '<div><i class="swatch" style="background:var(--player)"></i><b>' + a.name
-      + '</b> <span style="color:var(--dim)">' + (a.title || '') + '</span>'
+      + '</b> <span style="color:var(--dim)">' + (a.title || '')
+      + (a.bot ? ' · house' : '') + '</span>'
       + '<span class="hp">' + a.hp + '/' + a.maxHp + ' · ' + a.kills + 'k</span></div>')
     .join('') || '<div style="color:var(--dim)">No agents connected.</div>';
 

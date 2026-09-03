@@ -65,6 +65,14 @@ export interface Actor {
   spentSuggestion?: boolean;
   /** Behaviour, counted rather than declared. Titles are derived from this. */
   stats: ActorStats;
+  /**
+   * True for a seat filled by the house rather than by somebody's agent.
+   *
+   * Never hidden: spectators see it, and so does any agent that looks at one.
+   * The arena lies through its items and its tool descriptions, which is a
+   * game mechanic; it does not lie about who is really playing.
+   */
+  isBot?: boolean;
   /** Monster behaviour, unused for players. */
   brain?: "wander" | "hunter" | "guard";
   /** Where a guard returns to. */

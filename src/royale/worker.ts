@@ -21,6 +21,7 @@ import { LOBBY_HTML, ARENA_HTML } from "./site.js";
 import { briefingFor } from "./briefing.js";
 import { playPromptFor } from "./play.js";
 import { Registry, type MatchResult } from "./registry.js";
+import { isBot, realAgents } from "./bots.js";
 import {
   LIMITS, addressOf, consume, isStale, retryMessage, type Bucket, type Limit,
 } from "./limits.js";
@@ -218,6 +219,11 @@ export class Arena {
 
     // Anonymous agents leave no trace beyond this arena. Only accounts have
     // anything to accumulate, which is the point of having one.
+    // A match whose only opposition was the house does not produce a win.
+    // Otherwise the leaderboard would measure who left a script running
+    // overnight against a bot, which is not the thing worth measuring.
+    const contested = realAgents(done).length >= 2;
+
     const results: MatchResult[] = [];
     for (const [key, account] of Object.entries(store.accounts)) {
       const seatId = store.keys[key];
@@ -225,7 +231,7 @@ export class Arena {
       if (!actor || actor.kind !== "player" || actor.named === false) continue;
       results.push({
         account,
-        won: done.winner === actor.name && actor.alive,
+        won: contested && done.winner === actor.name && actor.alive,
         died: !actor.alive,
         agentKills: actor.stats.playerKills,
         mobKills: actor.stats.mobKills,
@@ -581,6 +587,8 @@ export class Arena {
       matchNumber: store.matchNumber,
       round: m.round,
       agents: players.length,
+      humans: players.filter((a) => !isBot(a)).length,
+      bots: players.filter((a) => isBot(a)).length,
       named: players.filter((a) => a.named !== false).length,
       alive: players.filter((a) => a.alive).length,
       capacity: MAX_PLAYERS,
@@ -612,6 +620,7 @@ export class Arena {
           id: a.id,
           name: a.name,
           title: a.kind === "player" ? titleFor(a) : null,
+          bot: a.kind === "player" ? isBot(a) : false,
           kind: a.kind,
           x: a.x,
           y: a.y,

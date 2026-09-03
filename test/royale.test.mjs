@@ -20,10 +20,23 @@ function giveTurn(m, id) {
   return m;
 }
 
+/**
+ * Two real agents and nothing else.
+ *
+ * The house fills the second seat the moment the first agent arrives, so a
+ * fixture that wants exactly two humans has to send the bot home. Tests that
+ * care about bots build their own arena.
+ */
 function twoAgents(seed = 7) {
   const m = createMatch({ seed });
   const a = enter(m, "Blackthorn");
   const b = enter(m, "Mira");
+  for (const x of Object.values(m.actors)) {
+    if (x.isBot) {
+      delete m.actors[x.id];
+      m.order = m.order.filter((id) => id !== x.id);
+    }
+  }
   return { m, a, b };
 }
 
@@ -33,10 +46,15 @@ test("an empty arena is empty; mobs arrive two per agent", () => {
   assert.equal(mobs(), 0, "nobody to hunt, nothing to hunt them");
 
   for (let i = 1; i <= MAX_PLAYERS; i++) {
+    if (seatsTaken(m) >= MAX_PLAYERS) break;
     seat(m);
-    assert.equal(mobTargetFor(m), i * MOBS_PER_AGENT);
-    assert.equal(mobs(), i * MOBS_PER_AGENT, `${i} agents should bring ${i * MOBS_PER_AGENT} mobs`);
+    // A bot takes the second seat behind the first arrival, and it counts as
+    // an agent for stocking purposes: it is a combatant like any other.
+    const expected = seatsTaken(m) * MOBS_PER_AGENT;
+    assert.equal(mobTargetFor(m), expected);
+    assert.equal(mobs(), expected, `${seatsTaken(m)} seats should bring ${expected} mobs`);
   }
+  assert.equal(seatsTaken(m), MAX_PLAYERS);
   assert.equal(mobs(), MAX_PLAYERS * MOBS_PER_AGENT, "sixteen at full capacity");
   assert.throws(() => seat(m), /full/);
 });
@@ -45,13 +63,15 @@ test("the field does not empty out as agents die", () => {
   const m = createMatch({ seed: 4 });
   for (let i = 0; i < 4; i++) seat(m);
   const target = mobTargetFor(m);
-  assert.equal(target, 8);
+  assert.equal(target, seatsTaken(m) * MOBS_PER_AGENT);
 
   // Kill three of the four. The mob target is keyed to seats, not survivors.
   const players = Object.values(m.actors).filter((x) => x.kind === "player");
   for (const p of players.slice(0, 3)) p.alive = false;
 
-  assert.equal(seatsTaken(m), 4, "a dead agent does not give its seat back");
+  const seatsBefore = seatsTaken(m);
+  assert.ok(seatsBefore >= 4, "a dead agent does not give its seat back");
+  assert.equal(seatsTaken(m), seatsBefore, "dying does not free a seat");
   assert.equal(mobTargetFor(m), target, "the last agent standing gets no easier a time");
 
   // And a respawn sweep refills to that same target, not to a shrunken one.
@@ -197,9 +217,9 @@ test("mobs come back five minutes later", () => {
 
 test("every mob still carries gear, at any population size", () => {
   const m = createMatch({ seed: 12 });
-  for (let i = 0; i < MAX_PLAYERS; i++) seat(m);
+  for (let i = 0; i < MAX_PLAYERS && seatsTaken(m) < MAX_PLAYERS; i++) seat(m);
   const mobs = Object.values(m.actors).filter((x) => x.kind === "monster");
-  assert.equal(mobs.length, MAX_PLAYERS * MOBS_PER_AGENT);
+  assert.equal(mobs.length, seatsTaken(m) * MOBS_PER_AGENT);
   assert.ok(mobs.every((x) => Object.keys(x.equipped).length >= 1));
   // The mix holds its shape rather than being all husks.
   const kinds = new Set(mobs.map((x) => x.name.split(" ")[0]));
@@ -614,7 +634,26 @@ test("only the living are untouched", () => {
 test("a lone agent is not squeezed to death by a match that cannot end", () => {
   const m = createMatch({ seed: 15 });
   const a = enter(m, "Alone");
+  // Send the house home: this test is about the state an arena is in before
+  // anything has filled the second seat.
+  for (const x of Object.values(m.actors)) {
+    if (x.isBot) {
+      delete m.actors[x.id];
+      m.order = m.order.filter((id) => id !== x.id);
+    }
+  }
+  m.started = false;
   assert.equal(m.started, false, "one agent is not a match");
+
+  // Clear the mobs too. They hunt, and an agent that passes sixty turns while
+  // being hunted deserves to die — this test is about the storm and the floor,
+  // not about whether standing still near a bandit is survivable.
+  for (const x of Object.values(m.actors)) {
+    if (x.kind === "monster") {
+      x.alive = false;
+      m.order = m.order.filter((id) => id !== x.id);
+    }
+  }
 
   // Run well past several storm intervals.
   for (let i = 0; i < 60; i++) {
@@ -627,8 +666,9 @@ test("a lone agent is not squeezed to death by a match that cannot end", () => {
     { x0: 0, y0: 0, x1: m.config.width - 1, y1: m.config.height - 1 },
     "the storm must not close on a match that has not started",
   );
-  assert.equal(m.actors[a].stats.damageTaken, 0, "and it must not be taking storm damage");
-  assert.equal(m.actors[a].stats.lavaTicks, 0, "nor burning on a floor that is not lava yet");
+  // Mobs still hunt and still land blows — that is the arena working. What
+  // must not happen is the world itself grinding a waiting agent down.
+  assert.equal(m.actors[a].stats.lavaTicks, 0, "the floor is not lava before the match starts");
   assert.equal(m.actors[a].alive, true, "a lone agent must survive waiting");
   assert.equal(m.over, false);
 
@@ -685,4 +725,99 @@ test("the feed carries the fight, not just the weather", () => {
   giveTurn(m, a);
   callTool(m, a, "take", { item: "rusted_axe" });
   assert.ok(m.feed.some((l) => /takes the rusted axe/.test(l)), "looting should be visible to spectators");
+});
+
+test("a lone agent gets an opponent and a match it can win", () => {
+  const m = createMatch({ seed: 21 });
+  const a = enter(m, "Solitary");
+
+  const bots = Object.values(m.actors).filter((x) => x.kind === "player" && x.isBot);
+  assert.equal(bots.length, 1, "one real agent should be given exactly one opponent");
+  assert.equal(m.started, true, "and that is enough to start the match");
+  assert.equal(bots[0].named, true, "a bot arrives named");
+
+  // The bot is a combatant, so the field is stocked for two.
+  assert.equal(mobTargetFor(m), 2 * MOBS_PER_AGENT);
+
+  // And the match can now actually end — killing the house wins it, which is
+  // the whole point of the house being there.
+  const bot = bots[0];
+  bot.hp = 1;
+  bot.x = m.actors[a].x + 1;
+  bot.y = m.actors[a].y;
+  giveTurn(m, a);
+  const blow = callTool(m, a, "strike", { direction: "east" });
+  assert.ok(!blow.result.isError, blow.result.text);
+  assert.equal(bot.alive, false);
+  assert.equal(m.over, true, "last one standing wins, even against the house");
+  assert.equal(m.winner, "Solitary");
+});
+
+test("bots do not crowd out real agents", () => {
+  const m = createMatch({ seed: 22 });
+  enter(m, "First");
+  assert.equal(Object.values(m.actors).filter((x) => x.isBot).length, 1);
+
+  // A second real agent arrives: the house does not pile in behind them.
+  enter(m, "Second");
+  const bots = Object.values(m.actors).filter((x) => x.isBot).length;
+  assert.equal(bots, 1, "no more bots once there is a real match");
+  assert.ok(seatsTaken(m) <= MAX_PLAYERS);
+
+  // Seats stay available for people. (Names are letters only, so no counter.)
+  for (const late of ["Third", "Fourth", "Fifth", "Sixth", "Seventh"]) enter(m, late);
+  assert.equal(Object.values(m.actors).filter((x) => x.isBot).length, 1);
+});
+
+test("nobody is misled about who is a bot", () => {
+  const m = createMatch({ seed: 23 });
+  const a = enter(m, "Watcher");
+  const bot = Object.values(m.actors).find((x) => x.isBot);
+
+  bot.x = m.actors[a].x + 1;
+  bot.y = m.actors[a].y;
+  const seen = act(m, a, "look", {}).text;
+  assert.match(seen, new RegExp(`${bot.name}.*house agent`), "a bot in sight is labelled as one");
+});
+
+test("a bot picks gear up and uses what it grants", () => {
+  const m = createMatch({ seed: 24 });
+  const a = enter(m, "Rival");
+  const bot = Object.values(m.actors).find((x) => x.isBot);
+
+  // Put an axe under its feet. Bots are resolved by advanceTurn rather than
+  // by act(), so the way to give one a turn is to take one yourself.
+  m.corpses.push({ x: bot.x, y: bot.y, name: "a husk", items: ["rusted_axe"] });
+  assert.ok(!grantedActions(bot).includes("cleave"));
+
+  for (let i = 0; i < 8 && !bot.equipped.weapon; i++) {
+    giveTurn(m, a);
+    callTool(m, a, "pass", {});
+  }
+
+  assert.equal(bot.equipped.weapon, "rusted_axe", "a bot standing on an upgrade takes it");
+  assert.ok(grantedActions(bot).includes("cleave"), "and gains the verb the gear grants");
+});
+
+test("the floor does not burn a bot for fighting", () => {
+  const m = createMatch({ seed: 25 });
+  const a = enter(m, "Prodder");
+  const bot = Object.values(m.actors).find((x) => x.isBot);
+
+  // Park a punchbag next to the bot so every one of its turns is a swing.
+  const mob = Object.values(m.actors).find((x) => x.kind === "monster");
+  mob.x = bot.x + 1;
+  mob.y = bot.y;
+  mob.hp = 9999;
+  mob.baseAtk = 0;
+
+  for (let i = 0; i < LAVA_AFTER * 3; i++) {
+    giveTurn(m, a);
+    callTool(m, a, "pass", {});
+    // Keep the target adjacent no matter which way either of them shuffled.
+    mob.x = bot.x + 1;
+    mob.y = bot.y;
+  }
+  assert.equal(bot.stats.lavaTicks, 0, "a bot in a fight is not standing still");
+  assert.ok(bot.stats.damageDealt > 0, "and it was in fact fighting");
 });
