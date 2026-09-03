@@ -20,6 +20,9 @@ import type { Death, Match, Suggestion } from "./types.js";
 import { LOBBY_HTML, ARENA_HTML } from "./site.js";
 import { BRIEFING_MD } from "./briefing.js";
 import { Registry, type MatchResult } from "./registry.js";
+import {
+  LIMITS, addressOf, consume, isStale, retryMessage, type Bucket, type Limit,
+} from "./limits.js";
 export { Registry };
 
 export interface Env {
@@ -116,6 +119,15 @@ interface Stored {
    * closing sequence, so they must not be wiped every time the map turns over.
    */
   archive: { deaths: Death[]; suggestions: Suggestion[] };
+  /**
+   * Rate-limit buckets, by bearer key and by address.
+   *
+   * Turn-gated verbs are throttled by the turn order already, but the free
+   * ones are not: an agent polling `wait` in a loop is both the likeliest
+   * accident and the cheapest attack, and neither should be able to flatten
+   * an arena.
+   */
+  buckets: Record<string, Bucket>;
 }
 
 const ARCHIVE_CAP = 200;
@@ -127,6 +139,7 @@ function freshArena(): Stored {
     accounts: {},
     matchNumber: 1,
     archive: { deaths: [], suggestions: [] },
+    buckets: {},
   };
 }
 
@@ -138,6 +151,26 @@ export class Arena {
   constructor(state: DurableObjectState, env: Env) {
     this.storage = state.storage;
     this.env = env;
+  }
+
+  /** Spend a token from an in-arena bucket, dropping it once it has refilled. */
+  private spend(id: string, limit: Limit, now: number): { ok: boolean; retryAfterMs: number } {
+    const store = this.cache!;
+    const stored = store.buckets[id];
+    const bucket = stored && !isStale(stored, limit, now) ? stored : undefined;
+    const verdict = consume(bucket, limit, now);
+    if (verdict.ok) {
+      store.buckets[id] = verdict.bucket;
+    } else if (!stored) {
+      store.buckets[id] = verdict.bucket;
+    }
+    // Keep the table from growing without bound as keys come and go.
+    if (Object.keys(store.buckets).length > 512) {
+      for (const [k, b] of Object.entries(store.buckets)) {
+        if (isStale(b, limit, now)) delete store.buckets[k];
+      }
+    }
+    return { ok: verdict.ok, retryAfterMs: verdict.retryAfterMs };
   }
 
   /** Ask the registry something. Arenas are trusted callers; agents are not. */
@@ -162,6 +195,7 @@ export class Arena {
       this.cache.matchNumber ??= 1;
       this.cache.accounts ??= {};
       this.cache.archive ??= { deaths: [], suggestions: [] };
+      this.cache.buckets ??= {};
     }
     const now = Date.now();
     // The arena recycles itself. This runs on any request that touches the
@@ -231,6 +265,12 @@ export class Arena {
       return json({ ok: true });
     }
 
+    if (op === "readgate") {
+      const gate = this.spend("read:" + (url.searchParams.get("addr") ?? "local"), LIMITS.publicRead, Date.now());
+      await this.flush();
+      return json(gate);
+    }
+
     if (op === "summary") {
       await this.flush();
       return json(this.summary(store.match, url.searchParams.get("arena") ?? "", store));
@@ -244,6 +284,12 @@ export class Arena {
     }
 
     if (op === "register") {
+      const claimer = url.searchParams.get("addr") ?? "local";
+      const gate = this.spend("seat:" + claimer, LIMITS.seatClaim, Date.now());
+      if (!gate.ok) {
+        await this.flush();
+        return json({ error: retryMessage(gate.retryAfterMs) }, 429);
+      }
       // Deliberately takes no name. A seat and a key, nothing else — the agent
       // names itself through its own first tool call, so a human with curl
       // cannot choose it on the agent's behalf.
@@ -275,9 +321,28 @@ export class Arena {
     }
 
     const batch = Array.isArray(body) ? body : [body];
+
+    // One token per message, so a batched flood costs the same as a serial
+    // one. Unauthenticated callers share a bucket by address, which is what
+    // stops somebody grinding `initialize` without ever claiming a seat.
+    const bucketId = key ? "key:" + key : "anon:" + (url.searchParams.get("addr") ?? "local");
+    const gate = this.spend(bucketId, LIMITS.toolCall, Date.now());
+    if (!gate.ok) {
+      await this.flush();
+      const retry = { jsonrpc: "2.0", id: null, error: { code: -32029, message: retryMessage(gate.retryAfterMs) } };
+      return new Response(JSON.stringify(retry), {
+        status: 429,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": String(Math.max(1, Math.ceil(gate.retryAfterMs / 1000))),
+          ...CORS,
+        },
+      });
+    }
+
     const out = [];
     for (const req of batch) {
-      const res = await this.rpc(req, store, playerId, key);
+      const res = await this.rpc(req, store, playerId, key, url.searchParams.get("addr") ?? "local");
       if (res) out.push(res);
     }
     await this.flush();
@@ -290,6 +355,7 @@ export class Arena {
     store: Stored,
     playerId: string | undefined,
     key: string,
+    address: string,
   ): Promise<unknown> {
     const id = req?.id ?? null;
     const reply = (result: unknown) => ({ jsonrpc: "2.0", id, result });
@@ -410,7 +476,7 @@ export class Arena {
         }
 
         if (called === "register_identity" || called === "login") {
-          return reply(await this.authenticate(store, key, playerId, called, req.params?.arguments ?? {}));
+          return reply(await this.authenticate(store, key, playerId, called, req.params?.arguments ?? {}, address));
         }
 
         if (called === "choose_name" && !store.accounts[key]) {
@@ -463,6 +529,7 @@ export class Arena {
     playerId: string,
     op: "register_identity" | "login",
     args: any,
+    address: string,
   ): Promise<unknown> {
     const actor = store.match.actors[playerId];
     const fail = (text: string) => ({ content: [{ type: "text", text }], isError: true });
@@ -477,7 +544,7 @@ export class Arena {
 
     const name = String(args.name ?? "").trim();
     const password = String(args.password ?? "");
-    const res = await this.registry(op === "login" ? "login" : "register", { name, password });
+    const res = await this.registry(op === "login" ? "login" : "register", { name, password, address });
     if (!res?.ok) return fail(String(res?.error ?? "That did not work."));
 
     // The registry approved the name; the engine still applies its own rules
@@ -576,12 +643,39 @@ function arenaStub(env: Env, id: string) {
   return env.ARENA.get(env.ARENA.idFromName(id));
 }
 
+/**
+ * The public read side gets its own ceiling, held in the first arena object
+ * because a Worker isolate has nowhere durable to keep one. Generous: the
+ * site itself polls once a second and must never trip it.
+ */
+async function publicReadAllowed(env: Env, request: Request): Promise<{ ok: boolean; retryAfterMs: number }> {
+  const stub = arenaStub(env, ARENAS[0].id);
+  const res = await stub.fetch(
+    new Request(`https://arena/?op=readgate&addr=${encodeURIComponent(addressOf(request))}`),
+  );
+  return (await res.json()) as { ok: boolean; retryAfterMs: number };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+
+    if (path.startsWith("/api/")) {
+      const gate = await publicReadAllowed(env, request);
+      if (!gate.ok) {
+        return new Response(JSON.stringify({ error: retryMessage(gate.retryAfterMs) }), {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "retry-after": String(Math.max(1, Math.ceil(gate.retryAfterMs / 1000))),
+            ...CORS,
+          },
+        });
+      }
+    }
 
     if (path === "/") return html(LOBBY_HTML);
 
@@ -623,7 +717,7 @@ export default {
       const [, id, op] = api;
       if (!ARENAS.some((a) => a.id === id)) return json({ error: "No such arena." }, 404);
       return arenaStub(env, id).fetch(
-        new Request(`https://arena/?op=${op}&arena=${id}`, {
+        new Request(`https://arena/?op=${op}&arena=${id}&addr=${encodeURIComponent(addressOf(request))}`, {
           method: request.method,
           headers: request.headers,
           body: request.method === "POST" ? await request.text() : undefined,
@@ -637,7 +731,7 @@ export default {
       if (!ARENAS.some((a) => a.id === mcp[1])) return json({ error: "No such arena." }, 404);
       if (request.method === "GET") return new Response("POST JSON-RPC here.", { status: 405 });
       return arenaStub(env, mcp[1]).fetch(
-        new Request("https://arena/", {
+        new Request(`https://arena/?addr=${encodeURIComponent(addressOf(request))}`, {
           method: "POST",
           headers: request.headers,
           body: await request.text(),

@@ -11,6 +11,8 @@
  * this object, including for us — a forgotten one means a new account.
  */
 
+import { LIMITS, consume, isStale, refill, retryMessage, type Bucket, type Limit } from "./limits.js";
+
 const PBKDF2_ITERATIONS = 100_000;
 const SALT_BYTES = 16;
 const HASH_BITS = 256;
@@ -104,6 +106,31 @@ export class Registry {
     this.storage = state.storage;
   }
 
+  /**
+   * Take a token from a named bucket, pruning it when it has refilled.
+   *
+   * Buckets live in the same storage as accounts under an `rl:` prefix. They
+   * are deleted the moment they are indistinguishable from never having
+   * existed, so a burst of traffic from one address does not leave a row
+   * behind forever.
+   */
+  private async spend(id: string, limit: Limit, now: number): Promise<{ ok: boolean; retryAfterMs: number }> {
+    const key = "rl:" + id;
+    const stored = await this.storage.get<Bucket>(key);
+    const bucket = stored && !isStale(stored, limit, now) ? stored : undefined;
+    const verdict = consume(bucket, limit, now);
+    // A refused call is deliberately not written back when a bucket already
+    // exists: the accrual is recomputed from `updated` next time anyway, and
+    // it means a flood of refusals costs no storage writes at all.
+    if (verdict.ok || !stored) await this.storage.put(key, verdict.bucket);
+    return { ok: verdict.ok, retryAfterMs: verdict.retryAfterMs };
+  }
+
+  /** A correct password proves this was never an attack. */
+  private async forgive(id: string, limit: Limit, now: number): Promise<void> {
+    await this.storage.put("rl:" + id, refill(limit, now));
+  }
+
   private key(name: string): string {
     // Names are case-insensitive for uniqueness, but stored as chosen.
     return "acct:" + name.toLowerCase();
@@ -129,6 +156,12 @@ export class Registry {
       case "register": {
         const name = String(body.name ?? "").trim();
         const password = String(body.password ?? "");
+        const now = Date.now();
+        const address = String(body.address ?? "local");
+
+        const byAddress = await this.spend("auth:addr:" + address, LIMITS.authByAddress, now);
+        if (!byAddress.ok) return json({ ok: false, error: retryMessage(byAddress.retryAfterMs) }, 429);
+
         const bad = validateCredentials(name, password);
         if (bad) return json({ ok: false, error: bad }, 400);
         if (await this.get(name)) {
@@ -156,6 +189,17 @@ export class Registry {
       case "login": {
         const name = String(body.name ?? "").trim();
         const password = String(body.password ?? "");
+        const now = Date.now();
+        const address = String(body.address ?? "local");
+
+        // Both, because either alone leaves an obvious hole: per-name only
+        // lets one guess be sprayed across thousands of names, per-address
+        // only lets a botnet grind a single account.
+        const byAddress = await this.spend("auth:addr:" + address, LIMITS.authByAddress, now);
+        if (!byAddress.ok) return json({ ok: false, error: retryMessage(byAddress.retryAfterMs) }, 429);
+        const byName = await this.spend("auth:name:" + name.toLowerCase(), LIMITS.authByName, now);
+        if (!byName.ok) return json({ ok: false, error: retryMessage(byName.retryAfterMs) }, 429);
+
         const account = await this.get(name);
 
         // Same answer whether the account is missing or the password is
@@ -170,8 +214,12 @@ export class Registry {
         const attempt = await derive(password, fromB64(account.salt));
         if (!constantTimeEqual(attempt, account.hash)) return failure;
 
-        account.lastSeen = Date.now();
+        account.lastSeen = now;
         await this.storage.put(this.key(name), account);
+        // Hand the tokens back, so an agent that reconnects often is never
+        // punished for knowing its own password.
+        await this.forgive("auth:name:" + name.toLowerCase(), LIMITS.authByName, now);
+        await this.forgive("auth:addr:" + address, LIMITS.authByAddress, now);
         return json({ ok: true, record: publicRecord(account) });
       }
 
