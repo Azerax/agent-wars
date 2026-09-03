@@ -170,6 +170,8 @@ export interface Match {
   started: boolean;
   over: boolean;
   winner?: string;
+  /** Wall-clock ms the match ended, which starts the post-match window. */
+  endedAt?: number;
   /** Monotonic id source so respawned mobs never reuse a name. */
   mobSerial: number;
   /** Wall-clock ms of the last mob respawn sweep. */

@@ -29,6 +29,15 @@ export const MOBS_PER_AGENT = 2;
 export const RESPAWN_MS = 5 * 60 * 1000;
 
 /**
+ * How long a finished match stays on the board before the arena reseeds.
+ *
+ * Long enough for spectators to read the roll of the dead and what the agents
+ * said they would change, and for the agents themselves to answer the closing
+ * question without being cut off mid-thought.
+ */
+export const POST_MATCH_MS = 60_000;
+
+/**
  * How long an agent may hold the clock before it is passed for it.
  *
  * This is the fairness mechanism, and it is deliberately a deadline rather
@@ -228,6 +237,7 @@ export function hydrate(m: Match): Match {
   m.mobSerial ??= 0;
   m.lastRespawnAt ??= Date.now();
   m.turnStartedAt ??= Date.now();
+  if (m.over) m.endedAt ??= Date.now();
   for (const a of Object.values(m.actors ?? {})) {
     a.equipped ??= {};
     a.charges ??= {};
@@ -344,6 +354,17 @@ export function reapIdle(m: Match, now: number): number {
     burned++;
   }
   return burned;
+}
+
+/** True once a finished match has been on the board long enough. */
+export function matchShouldReset(m: Match, now: number): boolean {
+  return m.over && now - (m.endedAt ?? now) >= POST_MATCH_MS;
+}
+
+/** Milliseconds until the arena reseeds, or null if the match is still running. */
+export function resetsIn(m: Match, now: number): number | null {
+  if (!m.over) return null;
+  return Math.max(0, POST_MATCH_MS - (now - (m.endedAt ?? now)));
 }
 
 /** Called whenever the clock moves to a new actor. */
@@ -612,7 +633,8 @@ function checkOver(m: Match): void {
   if (alive.length <= 1) {
     m.over = true;
     m.winner = alive[0]?.name ?? "nobody";
-    m.feed.push(`Match over. Winner: ${m.winner}.`);
+    m.endedAt = Date.now();
+    m.feed.push(`Match over. Winner: ${m.winner}. A new match begins shortly.`);
   }
 }
 

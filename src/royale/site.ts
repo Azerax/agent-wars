@@ -126,11 +126,14 @@ async function tick() {
       <div class="card">
         <div class="name">
           <b>\${a.name}</b>
-          <div>\${a.over ? 'Match over — winner: ' + (a.winner || 'nobody') : a.lastEvent}</div>
+          <div>\${a.over ? 'Match over — winner: ' + (a.winner || 'nobody')
+            + (a.resetsInMs !== null ? ' · new match in ' + Math.ceil(a.resetsInMs / 1000) + 's' : '')
+            : a.lastEvent}</div>
         </div>
         <div class="stat"><b class="\${a.agents >= a.capacity ? 'full' : ''}">\${a.agents}/\${a.capacity}</b><span>agents</span></div>
         <div class="stat"><b>\${a.mobs}</b><span>mobs</span></div>
         <div class="stat"><b>\${a.round}</b><span>round</span></div>
+        <div class="stat"><b>#\${a.matchNumber}</b><span>match</span></div>
         <div class="stat"><a href="/arena/\${a.id}">watch &rarr;</a></div>
       </div>\`).join('');
   } catch (e) { /* the lobby is not important enough to shout about */ }
@@ -193,9 +196,12 @@ async function tick() {
 
   if (w !== s.width || h !== s.height) build(s.width, s.height);
   document.getElementById('title').textContent = id.replace(/-/g, ' ');
-  document.getElementById('sub').textContent = s.over
-    ? 'Match over. Winner: ' + (s.winner || 'nobody') + '.'
-    : 'Round ' + s.round + (s.turn ? ' — ' + s.turn + ' is acting' : '');
+  const countdown = s.resetsInMs === null ? '' :
+    ' New match in ' + Math.ceil(s.resetsInMs / 1000) + 's.';
+  document.getElementById('sub').textContent =
+    'Match ' + s.matchNumber + ' · ' + (s.over
+      ? 'over — winner: ' + (s.winner || 'nobody') + '.' + countdown
+      : 'round ' + s.round + (s.turn ? ' — ' + s.turn + ' is acting' : ''));
 
   const walls = new Set(s.walls);
   const smoke = new Set(s.smoke.map(p => p.x + ',' + p.y));

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate } from "../dist/royale/engine.js";
+import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS } from "../dist/royale/engine.js";
 import { toolsFor, callTool, seat } from "../dist/royale/mcp.js";
 
 /** Seat an agent and have it name itself, the way a real one must. */
@@ -546,4 +546,54 @@ test("a match stored by an older version still loads", () => {
   const id = Object.values(fixed.actors).find((a) => a.kind === "player").id;
   assert.ok(!act(fixed, id, "look", {}).isError);
   assert.ok(titleFor(fixed.actors[id]));
+});
+
+test("a finished match sits on the board, then the arena reseeds", () => {
+  const { m, a, b } = twoAgents();
+  const loser = m.actors[b];
+  loser.hp = 1;
+  loser.x = m.actors[a].x + 1;
+  loser.y = m.actors[a].y;
+  giveTurn(m, a);
+  callTool(m, a, "strike", { direction: "east" });
+
+  assert.equal(m.over, true);
+  assert.ok(m.endedAt, "the end is timestamped");
+
+  // It stays up long enough to be read.
+  assert.equal(matchShouldReset(m, m.endedAt), false, "not immediately");
+  assert.ok(resetsIn(m, m.endedAt) > 0);
+  assert.equal(matchShouldReset(m, m.endedAt + POST_MATCH_MS - 1), false);
+  assert.equal(matchShouldReset(m, m.endedAt + POST_MATCH_MS), true);
+  assert.equal(resetsIn(m, m.endedAt + POST_MATCH_MS), 0);
+
+  // A running match never resets.
+  const fresh = createMatch({ seed: 2 });
+  assert.equal(matchShouldReset(fresh, Date.now() + 1e9), false);
+  assert.equal(resetsIn(fresh, Date.now()), null);
+});
+
+test("the closing window is long enough to answer the closing question", () => {
+  const { m, a, b } = twoAgents();
+  const loser = m.actors[b];
+  loser.hp = 1;
+  loser.x = m.actors[a].x + 1;
+  loser.y = m.actors[a].y;
+  giveTurn(m, a);
+  callTool(m, a, "strike", { direction: "east" });
+
+  // Both endings still have their actions available while the window is open.
+  assert.ok(toolsFor(m, b).map((t) => t.name).includes("last_words"));
+  assert.ok(toolsFor(m, a).map((t) => t.name).includes("suggest"));
+  assert.ok(!matchShouldReset(m, m.endedAt + 1000), "a second later, still readable");
+});
+
+test("hydrate gives an old finished match an end time rather than resetting it instantly", () => {
+  const m = createMatch({ seed: 8 });
+  m.over = true;
+  delete m.endedAt;
+  const before = Date.now();
+  hydrate(m);
+  assert.ok(m.endedAt >= before, "a match that ended before we tracked it gets the full window");
+  assert.equal(matchShouldReset(m, Date.now()), false);
 });
