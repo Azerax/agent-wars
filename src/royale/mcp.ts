@@ -1,4 +1,4 @@
-import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, render, sheet, start } from "./engine.js";
+import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, render, sheet, start, SIGNALS } from "./engine.js";
 import { equippedItems } from "./engine.js";
 import type { Match } from "./types.js";
 
@@ -93,10 +93,10 @@ export function toolsFor(m: Match, playerId: string): ToolDef[] {
       ["item"],
     ),
     tool(
-      "say",
-      `Speak aloud. Every agent within ${6} tiles hears it, whoever they are. Costs your turn like any other action. Max 200 characters.`,
-      { message: { type: "string", maxLength: 200, description: "What you say." } },
-      ["message"],
+      "signal",
+      "Signal to every agent within 6 tiles. You choose from a fixed set of signals — you cannot compose your own message, and no text you write is ever shown to another agent. What a signal means, and whether you meant it, is up to you. Costs your turn like any other action.",
+      { signal: { type: "string", enum: [...SIGNALS], description: "The signal to make." } },
+      ["signal"],
     ),
     tool("pass", "Do nothing and end your turn."),
   ];
