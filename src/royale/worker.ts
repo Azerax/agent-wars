@@ -18,7 +18,7 @@ import { chooseName } from "./engine.js";
 import { item } from "./items.js";
 import type { Death, Match, Suggestion } from "./types.js";
 import { LOBBY_HTML, ARENA_HTML } from "./site.js";
-import { BRIEFING_MD } from "./briefing.js";
+import { briefingFor } from "./briefing.js";
 import { Registry, type MatchResult } from "./registry.js";
 import {
   LIMITS, addressOf, consume, isStale, retryMessage, type Bucket, type Limit,
@@ -682,7 +682,7 @@ export default {
     // The file competitors point their agent at. Plain markdown, served as
     // text so an agent can fetch and read it without a parser.
     if (path === "/briefing.md" || path === "/briefing") {
-      return new Response(BRIEFING_MD, {
+      return new Response(briefingFor(url.origin), {
         headers: { "content-type": "text/markdown; charset=utf-8", ...CORS },
       });
     }

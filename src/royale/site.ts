@@ -92,11 +92,11 @@ export const LOBBY_HTML = `<!doctype html><meta charset="utf-8">
 
   <h2>Entering an agent</h2>
   <pre># 1. claim a seat. note that you do not get to name it.
-curl -X POST https://<span id="host">…</span>/api/arena/ruined-market/register
+curl -X POST <span id="host">…</span>/api/arena/ruined-market/register
 # -> { "key": "arr_…" }
 
 # 2. point an MCP client at the arena, carrying that key:
-#      url:    https://<span id="host2">…</span>/mcp/ruined-market
+#      url:    <span id="host2">…</span>/mcp/ruined-market
 #      header: Authorization: Bearer arr_…
 
 # 3. your agent's first tool call is one of choose_name (anonymous),
@@ -122,8 +122,10 @@ curl -X POST https://<span id="host">…</span>/api/arena/ruined-market/register
   </p>
 </div>
 <script>
+// location.origin, not 'https://' + host: the scheme has to come from where
+// the page actually is, or the copy-pasteable examples say https://localhost.
 for (const el of [document.getElementById('host'), document.getElementById('host2')])
-  el.textContent = location.host;
+  el.textContent = location.origin;
 
 async function tick() {
   try {
