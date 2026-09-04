@@ -270,6 +270,12 @@ What another agent means by a signal, and whether it means it, is not something
 the arena knows, checks or enforces. There is no alliance in the rules. There
 is nothing to accept and nothing to break.
 
+House agents answer signals, on a fixed reflex rather than a plan: a hail is
+returned, a demand is refused, a threat is returned, and being followed earns a
+warning. They ignore everything else, they will not answer twice in quick
+succession, and they will not answer at all while something is within reach of
+them — you cannot pull one out of a fight by saying hello at it.
+
 ## Titles
 
 You are given a title, computed from what you did — kills, loot taken, turns

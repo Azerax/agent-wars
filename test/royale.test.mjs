@@ -1064,3 +1064,62 @@ test("the turn clock is long enough to think in", () => {
   assert.ok(TURN_TIMEOUT_MS >= 30_000, "a reasoning agent needs room");
   assert.ok(ABSENT_MS >= 4 * TURN_TIMEOUT_MS, "desertion must take much longer than one slow turn");
 });
+
+test("the house answers a hail, so the channel is not dead to a solo agent", () => {
+  const m = createMatch({ seed: 81 });
+  const a = enter(m, "Talker");
+  const bot = Object.values(m.actors).find((x) => x.isBot);
+
+  // Stand next to nothing, in earshot of the bot, and say hello.
+  bot.x = m.actors[a].x + 3;
+  bot.y = m.actors[a].y;
+  for (const mob of Object.values(m.actors)) if (mob.kind === "monster") mob.alive = false;
+  m.actors[a].inbox = [];
+
+  giveTurn(m, a);
+  const said = callTool(m, a, "signal", { signal: "hail" });
+  assert.ok(!said.result.isError, said.result.text);
+  assert.match(said.result.text, /close enough to have seen it/);
+
+  // The bot takes its turn inside that same call, so the answer is usually
+  // already waiting. Give it a few more in case the order put it later.
+  for (let i = 0; i < 8 && !m.actors[a].inbox.some((l) => /raises a hand/.test(l)); i++) {
+    giveTurn(m, a);
+    callTool(m, a, "pass", {});
+  }
+  const reply = m.actors[a].inbox.find((l) => /raises a hand in greeting/.test(l));
+  assert.ok(reply, `expected a hail back, inbox: ${JSON.stringify(m.actors[a].inbox)}`);
+  assert.match(reply, /\[house agent\]/, "and it must be labelled as the house");
+});
+
+test("the house refuses a demand and does not chat forever", () => {
+  const m = createMatch({ seed: 82 });
+  const a = enter(m, "Grabby");
+  const bot = Object.values(m.actors).find((x) => x.isBot);
+  bot.x = m.actors[a].x + 3;
+  bot.y = m.actors[a].y;
+  for (const mob of Object.values(m.actors)) if (mob.kind === "monster") mob.alive = false;
+
+  giveTurn(m, a);
+  callTool(m, a, "signal", { signal: "demand" });
+  for (let i = 0; i < 8; i++) { giveTurn(m, a); callTool(m, a, "pass", {}); }
+  assert.ok(m.actors[a].inbox.some((l) => /signals refusal/.test(l)), "a demand is refused");
+
+  // And the house does not answer its own answer.
+  const spoken = m.feed.filter((l) => /Bracken|Cinder|Dross/.test(l) && /signals|raises|refus/.test(l));
+  assert.ok(spoken.length <= 2, `the house must not hold a conversation with itself: ${spoken.length}`);
+});
+
+test("a bot in a fight ignores small talk", () => {
+  const m = createMatch({ seed: 83 });
+  const a = enter(m, "Distractor");
+  const bot = Object.values(m.actors).find((x) => x.isBot);
+
+  // Something adjacent to the bot: it should hit that, not chat.
+  const mob = Object.values(m.actors).find((x) => x.kind === "monster");
+  mob.x = bot.x + 1; mob.y = bot.y; mob.hp = 500;
+  bot.heard = { from: "Distractor", token: "hail", round: m.round };
+
+  for (let i = 0; i < 3; i++) { giveTurn(m, a); callTool(m, a, "pass", {}); }
+  assert.ok(bot.stats.damageDealt > 0, "fighting beats answering");
+});

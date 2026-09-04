@@ -137,11 +137,18 @@ interface Stored {
   accounts: Record<string, string>;
   /** Which match this arena is on. */
   matchNumber: number;
+  /** Display name, remembered so a retiring match can label its rows. */
+  arenaName?: string;
   /**
    * What survives a reseed. Epitaphs and ideas are the point of the whole
    * closing sequence, so they must not be wiped every time the map turns over.
    */
-  archive: { deaths: Death[]; suggestions: Suggestion[] };
+  /**
+   * History, kept across resets. `results` is one row per agent per finished
+   * match — anonymous ones included, because almost nobody registers and a
+   * record that only counts the minority describes nothing.
+   */
+  archive: { deaths: Death[]; suggestions: Suggestion[]; results: PlayedMatch[] };
   /**
    * Rate-limit buckets, by bearer key and by address.
    *
@@ -153,6 +160,19 @@ interface Stored {
   buckets: Record<string, Bucket>;
 }
 
+/** One agent's finished match, whether or not it has an account. */
+interface PlayedMatch {
+  name: string;
+  registered: boolean;
+  won: boolean;
+  died: boolean;
+  agentKills: number;
+  mobKills: number;
+  title: string;
+  arena: string;
+  at: number;
+}
+
 const ARCHIVE_CAP = 200;
 
 function freshArena(): Stored {
@@ -161,7 +181,7 @@ function freshArena(): Stored {
     keys: {},
     accounts: {},
     matchNumber: 1,
-    archive: { deaths: [], suggestions: [] },
+    archive: { deaths: [], suggestions: [], results: [] },
     buckets: {},
   };
 }
@@ -217,7 +237,8 @@ export class Arena {
       hydrate(this.cache.match);
       this.cache.matchNumber ??= 1;
       this.cache.accounts ??= {};
-      this.cache.archive ??= { deaths: [], suggestions: [] };
+      this.cache.archive ??= { deaths: [], suggestions: [], results: [] };
+      this.cache.archive.results ??= [];
       this.cache.buckets ??= {};
     }
     const now = Date.now();
@@ -245,19 +266,42 @@ export class Arena {
     // overnight against a bot, which is not the thing worth measuring.
     const contested = realAgents(done).length >= 2;
 
-    const results: MatchResult[] = [];
+    // Which seats belong to accounts, so a row can say so. Everything else
+    // that fought gets a row too.
+    const accountFor = new Map<string, string>();
     for (const [key, account] of Object.entries(store.accounts)) {
       const seatId = store.keys[key];
-      const actor = seatId ? done.actors[seatId] : undefined;
-      if (!actor || actor.kind !== "player" || actor.named === false) continue;
-      results.push({
-        account,
+      if (seatId) accountFor.set(seatId, account);
+    }
+
+    const results: MatchResult[] = [];
+    for (const actor of Object.values(done.actors)) {
+      if (actor.kind !== "player" || actor.named === false || isBot(actor)) continue;
+      const account = accountFor.get(actor.id);
+      const row: PlayedMatch = {
+        name: actor.name,
+        registered: !!account,
         won: contested && done.winner === actor.name && actor.alive,
         died: !actor.alive,
         agentKills: actor.stats.playerKills,
         mobKills: actor.stats.mobKills,
         title: titleFor(actor),
-      });
+        arena: store.arenaName ?? "an arena",
+        at: Date.now(),
+      };
+      store.archive.results = [...store.archive.results, row].slice(-ARCHIVE_CAP);
+      // Only accounts are filed with the registry; anonymous names are
+      // released at the end of the match and mean nothing after it.
+      if (account) {
+        results.push({
+          account,
+          won: row.won,
+          died: row.died,
+          agentKills: row.agentKills,
+          mobKills: row.mobKills,
+          title: row.title,
+        });
+      }
     }
     if (results.length) {
       try {
@@ -286,6 +330,8 @@ export class Arena {
     const url = new URL(request.url);
     const op = url.searchParams.get("op");
     const store = await this.load();
+    const label = url.searchParams.get("arena");
+    if (label) store.arenaName = label;
 
     if (op === "reset") {
       // Start a new match, keep the history. The archive is the roll of the

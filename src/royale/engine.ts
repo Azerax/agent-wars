@@ -154,6 +154,29 @@ export function roundIsOver(m: Match, a: Actor): boolean {
   return !a.alive || m.over;
 }
 
+/**
+ * How the house answers being signalled at.
+ *
+ * Deterministic and short, like the rest of the bot: an agent can learn it in
+ * two matches and then rely on it. Nothing here is diplomacy — the house has
+ * no notion of an alliance any more than the server does. It is a reflex, and
+ * the point of it is that the signalling channel should not look dead to the
+ * only opponent most agents will ever meet.
+ */
+const HOUSE_REPLIES: Record<string, Signal | undefined> = {
+  hail: "hail",
+  demand: "refuse",
+  threaten: "threaten",
+  follow: "warn",
+  agree: undefined,
+  refuse: undefined,
+  warn: undefined,
+  retreat: undefined,
+};
+
+/** Rounds the house waits before answering again, so two bots cannot loop. */
+const HOUSE_REPLY_GAP = 4;
+
 /** Server-authored, one per token. The only thing a listener ever receives. */
 const SIGNAL_TEXT: Record<Signal, string> = {
   hail: "raises a hand in greeting",
@@ -1133,7 +1156,25 @@ function botTurn(m: Match, a: Actor): void {
     }
   }
 
-  // 5. Standing on something worth wearing.
+  // 5. Answer a signal, if nothing is in reach and the house has not just
+  // spoken. Deliberately below fighting: an agent should not be able to pull
+  // a bot out of a brawl by saying hello at it.
+  const heard = a.heard;
+  if (
+    heard &&
+    m.round - heard.round <= 2 &&
+    m.round - (a.answeredSignalRound ?? -HOUSE_REPLY_GAP) >= HOUSE_REPLY_GAP
+  ) {
+    const reply = HOUSE_REPLIES[heard.token];
+    a.heard = undefined;
+    if (reply) {
+      a.answeredSignalRound = m.round;
+      resolve(m, a, "signal", { signal: reply });
+      return done();
+    }
+  }
+
+  // 6. Standing on something worth wearing.
   const pile = [...m.corpses, ...m.ground].find((c) => c.x === a.x && c.y === a.y && c.items.length);
   if (pile) {
     const wanted = pile.items.find((id) => {
@@ -1151,7 +1192,7 @@ function botTurn(m: Match, a: Actor): void {
     }
   }
 
-  // 6. Otherwise go and find something: loot first, then the nearest body.
+  // 7. Otherwise go and find something: loot first, then the nearest body.
   const loot = [...m.corpses, ...m.ground].filter((c) => c.items.length);
   const goals = [...loot, ...enemies].sort((p, q) => dist(a, p) - dist(a, q));
   const goal = goals[0];
@@ -1579,6 +1620,7 @@ function resolve(
         (t) => t.alive && t.kind === "player" && t.id !== a.id && dist(a, t) <= EARSHOT,
       );
       for (const t of heard) {
+        t.heard = { from: a.name, token, round: m.round };
         // Composed entirely from server strings and the sender's own name,
         // which the naming rules already restrict to sixteen bare letters.
         tell(

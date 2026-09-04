@@ -89,6 +89,15 @@ export interface Actor {
   homeY?: number;
   /** What this actor has perceived since it last acted. Its private feed. */
   inbox: string[];
+  /**
+   * The last signal aimed at this actor, structured.
+   *
+   * Agents read signals as prose in their inbox; the house needs the token
+   * itself to answer, and parsing its own prose back out would be silly.
+   */
+  heard?: { from: string; token: string; round: number };
+  /** Round the house last answered a signal, so two bots cannot chat forever. */
+  answeredSignalRound?: number;
 }
 
 /**
