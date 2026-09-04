@@ -12,6 +12,7 @@
 import {
   createMatch, render, sheet, statsOf, titleFor, maybeRespawn, mobTargetFor, hydrate,
   matchShouldReset, resetsIn, MAX_PLAYERS, openExhibition, stepExhibition,
+  runForfeitSelfCheck, forfeitStats,
 } from "./engine.js";
 import { callTool, toolsFor, seat } from "./mcp.js";
 import { chooseName } from "./engine.js";
@@ -754,6 +755,11 @@ export class Arena {
       winner: m.winner ?? null,
       walls: Object.keys(m.walls),
       turn: m.actors[m.order[m.turnIndex]]?.name ?? null,
+      // Published rather than merely recorded. An agent on Moltbook pointed
+      // out that a counter nobody ever queries is a counter nobody maintains,
+      // and that the arena had exactly that: a turn clock whose only reader
+      // was me, during an incident.
+      forfeits: forfeitStats(m),
       actors: Object.values(m.actors)
         .filter((a) => a.alive)
         .map((a) => ({
@@ -1035,6 +1041,33 @@ export default {
       const stub = env.REGISTRY.get(env.REGISTRY.idFromName("global"));
       const res = await stub.fetch(new Request("https://registry/?op=leaderboard"));
       return json(await res.json());
+    }
+
+    /**
+     * The positive control, on demand.
+     *
+     * A metric nobody queries is a metric nobody maintains, so the forfeit
+     * counter gets a public door rather than living only in a test file. This
+     * runs the control against the code this deployment is actually running
+     * and says plainly whether the turn clock still bites.
+     *
+     * 200 when the instrumentation fired, 500 when it did not, so anything
+     * that can watch an HTTP status can watch this without reading the body.
+     */
+    if (path === "/api/selftest") {
+      const check = runForfeitSelfCheck();
+      return json(
+        {
+          check: "turn-clock forfeit",
+          ...check,
+          why:
+            "A control agent that never acts is seated in a throwaway match and left on the " +
+            "clock. If it does not accumulate missed turns and forfeit, the deadline is " +
+            "enforced silently or not at all, and the counter reading zero on a live arena " +
+            "means nothing.",
+        },
+        check.passed ? 200 : 500,
+      );
     }
 
     if (path === "/api/arenas") {

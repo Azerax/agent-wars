@@ -1,6 +1,16 @@
 import { COMMON, RARE, UNCOMMON, item } from "./items.js";
 import { pick, range, rngFrom } from "./rng.js";
-import { botsIn, botsWanted, isBot, isHouseName, nextBotName, DEMO_BOTS } from "./bots.js";
+import {
+  botsIn,
+  botsWanted,
+  isActiveBot,
+  isBot,
+  isControl,
+  isHouseName,
+  nextBotName,
+  CONTROL_NAME,
+  DEMO_BOTS,
+} from "./bots.js";
 import {
   DIRS,
   SLOTS,
@@ -416,10 +426,17 @@ export function reclaimUnusedSeats(m: Match, now: number): number {
   return freed;
 }
 
-/** Anyone who is actually waiting for a turn: alive, named, and not the house. */
+/**
+ * Anyone who is actually waiting for a turn: alive, named, and not the house.
+ *
+ * Control bots count. They are the house, but they are the part of the house
+ * that holds the clock, so a match containing nothing else still has something
+ * for reapIdle to burn down — and burning them down terminates, because after
+ * three misses they forfeit and die.
+ */
 function waitingAgents(m: Match): Actor[] {
   return Object.values(m.actors).filter(
-    (a) => a.kind === "player" && a.alive && a.named !== false && !isBot(a),
+    (a) => a.kind === "player" && a.alive && a.named !== false && !isActiveBot(a),
   );
 }
 
@@ -433,7 +450,7 @@ export function reapIdle(m: Match, now: number): number {
     // seat that never named itself. Move it along. Without this the match
     // deadlocks: no agent may act because it is not their turn, and nothing
     // ever makes it their turn.
-    if (!cur || cur.kind !== "player" || isBot(cur) || cur.named === false) {
+    if (!cur || cur.kind !== "player" || isActiveBot(cur) || cur.named === false) {
       if (!waitingAgents(m).length) break;
       advanceTurn(m);
       m.turnStartedAt = now;
@@ -497,7 +514,7 @@ export function stepExhibition(m: Match): boolean {
   if (m.over) return false;
   const cur = m.actors[m.order[m.turnIndex]];
   if (cur && cur.alive) {
-    if (cur.kind === "player" && !isBot(cur)) return false;
+    if (cur.kind === "player" && !isActiveBot(cur)) return false;
     if (isBot(cur)) botTurn(m, cur);
     else monsterTurn(m, cur);
   }
@@ -666,6 +683,149 @@ export function fillWithBots(m: Match, floor = 0): number {
     topUpMobs(m, rngFrom(m.config.seed + m.mobSerial * 13));
   }
   return added;
+}
+
+/**
+ * Seat the positive control: a house agent whose entire strategy is to let
+ * every deadline expire.
+ *
+ * The forfeit path is the one piece of this engine that nothing exercises in
+ * ordinary play. Real agents rarely miss three turns in a row, bots are
+ * resolved inline and so never miss any, and the result is a counter that
+ * reads zero on a healthy arena and zero on a broken one. Those two readings
+ * have to be told apart deliberately, by putting something on the board that
+ * is *supposed* to forfeit and checking that it does.
+ *
+ * Deliberately not called from fillWithBots. A control bot is a free corpse
+ * carrying gear, so dropping one into a live match would hand a real agent a
+ * present and quietly distort the record. It is seated only where it has been
+ * asked for: a test, or the self-check route.
+ *
+ * `speed` is set below every other seat so it takes the clock last in a round,
+ * which keeps the arithmetic in the self-check honest — the control is timed
+ * out at a predictable point in the cycle rather than an arbitrary one.
+ */
+export function seatControlBot(m: Match, now = Date.now()): Actor | undefined {
+  if (m.over) return undefined;
+  if (seatsTaken(m) >= MAX_PLAYERS) return undefined;
+  const id = "bot_control";
+  if (m.actors[id]) return m.actors[id];
+
+  const { x, y } = freeTile(m, rngFrom(m.config.seed + 90210));
+  const a: Actor = {
+    id,
+    kind: "player",
+    name: CONTROL_NAME,
+    named: true,
+    isBot: true,
+    isControl: true,
+    x,
+    y,
+    hp: 30,
+    baseMaxHp: 30,
+    baseAtk: 3,
+    baseDef: 1,
+    baseSpeed: 1,
+    alive: true,
+    equipped: {},
+    charges: {},
+    bracedUntilRound: 0,
+    kills: 0,
+    lastActedRound: 0,
+    stillTurns: 0,
+    consecutiveMisses: 0,
+    // Seated in the past, because the forfeit rule requires both three misses
+    // and ABSENT_MS of silence. A control bot is silent by construction and
+    // should not have to wait out a freshness window it can never satisfy.
+    seatedAt: now - ABSENT_MS - 1,
+    lastSeenAt: now - ABSENT_MS - 1,
+    stats: newStats(),
+    inbox: [],
+  };
+  m.actors[id] = a;
+  m.feed.push(`${CONTROL_NAME} takes a seat and does not intend to use it.`);
+  rebuildOrder(m);
+  return a;
+}
+
+/**
+ * Did the forfeit instrumentation actually move?
+ *
+ * The number a self-check reports. Counts every missed turn recorded against
+ * every seat, which is the figure that has to be non-zero after a control bot
+ * has been left to rot for a few turns.
+ */
+export function forfeitStats(m: Match): {
+  missedTurns: number;
+  forfeited: number;
+  controlSeated: boolean;
+  controlAlive: boolean;
+} {
+  const players = Object.values(m.actors).filter((a) => a.kind === "player");
+  const control = players.find(isControl);
+  return {
+    missedTurns: players.reduce((n, a) => n + a.stats.missedTurns, 0),
+    forfeited: players.filter((a) => !a.alive && a.consecutiveMisses >= FORFEIT_AFTER).length,
+    controlSeated: !!control,
+    controlAlive: !!control?.alive,
+  };
+}
+
+/**
+ * Run the positive control against this build and report what happened.
+ *
+ * Deliberately builds its own throwaway match rather than touching a live
+ * arena: nobody's game should be disturbed to prove a counter works, and a
+ * check that costs a real agent a free corpse would not get run often enough
+ * to be worth having.
+ *
+ * The point is the failure case. `passed: false` means the forfeit path did
+ * not fire when something sat on the clock and refused to move — which is the
+ * same reading a healthy arena gives on a quiet day, and the reason this has
+ * to be asked rather than waited for.
+ */
+export function runForfeitSelfCheck(now = Date.now()): {
+  passed: boolean;
+  missedTurns: number;
+  forfeited: boolean;
+  expectedMisses: number;
+  detail: string;
+} {
+  const m = createMatch({ seed: 20260904 });
+  const control = seatControlBot(m, now);
+  if (!control) {
+    return {
+      passed: false,
+      missedTurns: 0,
+      forfeited: false,
+      expectedMisses: FORFEIT_AFTER,
+      detail: "could not seat the control bot",
+    };
+  }
+  m.started = true;
+
+  for (let i = 0; i < FORFEIT_AFTER && control.alive; i++) {
+    const at = m.order.indexOf(control.id);
+    if (at < 0) break;
+    m.turnIndex = at;
+    m.turnStartedAt = now - TURN_TIMEOUT_MS - 1;
+    reapIdle(m, now);
+  }
+
+  const missedTurns = control.stats.missedTurns;
+  const forfeited = !control.alive;
+  const passed = missedTurns >= FORFEIT_AFTER && forfeited;
+  return {
+    passed,
+    missedTurns,
+    forfeited,
+    expectedMisses: FORFEIT_AFTER,
+    detail: passed
+      ? `The control missed ${missedTurns} turns and forfeited. Turn-clock instrumentation is live.`
+      : `The control missed ${missedTurns} turns (expected at least ${FORFEIT_AFTER}) and ` +
+        `${forfeited ? "forfeited" : "did not forfeit"}. The forfeit path is not doing what the ` +
+        `briefing says it does.`,
+  };
 }
 
 /** Turn order is by speed, so gear that changes speed changes the order. */
@@ -942,12 +1102,15 @@ function advanceTurn(m: Match): void {
     }
     const a = m.actors[m.order[m.turnIndex]];
     if (!a || !a.alive) continue;
-    if (a.kind === "player" && !isBot(a)) {
+    if (a.kind === "player" && !isActiveBot(a)) {
+      // Real agents and control bots both stop the walk here: one because it
+      // is owed a turn, the other because being owed a turn it will not take
+      // is the entire point of it.
       stormTick(m, a);
       return;
     }
-    // Bots and monsters are resolved by whoever asked, so neither can ever be
-    // the reason an arena stops moving.
+    // Ordinary bots and monsters are resolved by whoever asked, so neither can
+    // ever be the reason an arena stops moving.
     if (isBot(a)) botTurn(m, a);
     else monsterTurn(m, a);
   }

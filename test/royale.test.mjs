@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS, hasLineOfSight, TURN_TIMEOUT_MS, FORFEIT_AFTER, ABSENT_MS, reclaimUnusedSeats, markSeen, openExhibition, stepExhibition } from "../dist/royale/engine.js";
+import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS, hasLineOfSight, TURN_TIMEOUT_MS, FORFEIT_AFTER, ABSENT_MS, reclaimUnusedSeats, markSeen, openExhibition, stepExhibition, seatControlBot, forfeitStats, fillWithBots } from "../dist/royale/engine.js";
 import { toolsFor, callTool, seat } from "../dist/royale/mcp.js";
+import { isControl, isActiveBot, isHouseName, CONTROL_NAME } from "../dist/royale/bots.js";
 
 /** Seat an agent and have it name itself, the way a real one must. */
 function enter(m, name) {
@@ -1216,4 +1217,100 @@ test("a house fight actually resolves rather than standing still", () => {
     m.feed.some((l) => /strikes|hits|cleaves|shoots|spears|knifes/.test(l)),
     `the exhibition must produce a fight, feed was: ${JSON.stringify(m.feed.slice(0, 6))}`,
   );
+});
+
+/**
+ * The positive control, proposed by an agent on Moltbook.
+ *
+ * The forfeit counter reads zero on a healthy arena and zero on an arena where
+ * the instrumentation was never wired up. These tests are the only thing that
+ * tells those two readings apart: they put something on the board that is
+ * supposed to forfeit, and fail if it does not.
+ */
+test("the control bot holds the clock instead of being resolved inline", () => {
+  const m = createMatch({ seed: 4242 });
+  const real = enter(m, "Warden");
+  const control = seatControlBot(m);
+  assert.ok(control, "control bot should take a seat");
+  assert.ok(isControl(control), "control bot must be flagged as a control");
+  assert.equal(isActiveBot(control), false, "a control bot is not an active bot");
+
+  // The distinguishing property. An ordinary bot never appears on the clock,
+  // because whoever advanced the turn resolved it on the way past.
+  giveTurn(m, control.id);
+  assert.equal(m.order[m.turnIndex], control.id, "control bot should be able to hold the clock");
+
+  // And it must not act for itself. Nothing it does may change the board.
+  const before = { x: control.x, y: control.y, hp: control.hp };
+  reapIdle(m, m.turnStartedAt + 1);
+  assert.equal(control.x, before.x);
+  assert.equal(control.y, before.y);
+  assert.ok(real, "the real agent is still seated");
+});
+
+test("a seated control bot makes the forfeit counter climb", () => {
+  const m = createMatch({ seed: 4243 });
+  enter(m, "Warden");
+  const control = seatControlBot(m);
+
+  const start = forfeitStats(m);
+  assert.equal(start.missedTurns, 0, "nothing has missed a turn yet");
+  assert.equal(start.controlSeated, true);
+  assert.equal(start.controlAlive, true);
+
+  // Hand the control the clock and let the deadline pass, three times over.
+  for (let i = 0; i < FORFEIT_AFTER; i++) {
+    if (!control.alive) break;
+    giveTurn(m, control.id);
+    m.turnStartedAt = Date.now() - TURN_TIMEOUT_MS - 1;
+    reapIdle(m, Date.now());
+  }
+
+  const end = forfeitStats(m);
+  assert.ok(
+    end.missedTurns > 0,
+    "the forfeit path recorded nothing — the instrumentation is decorative",
+  );
+  assert.ok(
+    control.stats.missedTurns >= FORFEIT_AFTER,
+    `control should have missed at least ${FORFEIT_AFTER} turns, saw ${control.stats.missedTurns}`,
+  );
+  assert.equal(control.alive, false, "after three misses the control should have forfeited");
+  assert.equal(end.forfeited, 1, "exactly one seat forfeited");
+});
+
+test("an ordinary bot never forfeits, which is why it cannot be the control", () => {
+  const m = createMatch({ seed: 4244 });
+  enter(m, "Warden");
+  fillWithBots(m);
+  const bots = Object.values(m.actors).filter((a) => isActiveBot(a));
+  assert.ok(bots.length > 0, "expected the house to fill a seat");
+
+  for (const b of bots) {
+    giveTurn(m, b.id);
+    m.turnStartedAt = Date.now() - TURN_TIMEOUT_MS - 1;
+    reapIdle(m, Date.now());
+    assert.equal(
+      b.stats.missedTurns,
+      0,
+      "an active bot is resolved inline and must never accrue misses",
+    );
+  }
+});
+
+test("the control bot is not dropped into ordinary matches", () => {
+  const m = createMatch({ seed: 4245 });
+  enter(m, "Warden");
+  fillWithBots(m);
+  const seated = Object.values(m.actors).filter(isControl);
+  assert.equal(seated.length, 0, "filling seats must never seat the positive control");
+});
+
+test("the control name is reserved against real agents", () => {
+  assert.ok(isHouseName(CONTROL_NAME));
+  assert.ok(isHouseName(CONTROL_NAME.toLowerCase()));
+  const m = createMatch({ seed: 4246 });
+  const { playerId } = seat(m);
+  const taken = callTool(m, playerId, "choose_name", { name: CONTROL_NAME });
+  assert.ok(taken.result.isError, "an agent must not be able to name itself the control");
 });

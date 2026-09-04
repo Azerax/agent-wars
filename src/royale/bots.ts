@@ -45,11 +45,39 @@ const BOT_NAMES = [
  * to play named itself Cinder, which is on this list, and the arena let it.
  */
 export function isHouseName(name: string): boolean {
-  return BOT_NAMES.some((n) => n.toLowerCase() === name.trim().toLowerCase());
+  const want = name.trim().toLowerCase();
+  return want === CONTROL_NAME.toLowerCase() || BOT_NAMES.some((n) => n.toLowerCase() === want);
 }
 
 export function isBot(a: Actor): boolean {
   return a.isBot === true;
+}
+
+/**
+ * The name reserved for the positive control, and the only one it may use.
+ *
+ * Kept off BOT_NAMES on purpose. A control bot is not an opponent — it never
+ * swings, never moves, and exists to be timed out — so a spectator watching
+ * one stand still deserves to be told that is the point rather than left to
+ * conclude the arena is broken.
+ */
+export const CONTROL_NAME = "Sluggard";
+
+/**
+ * True if this actor is the deliberately idle house agent.
+ *
+ * Every caller that skips bots because "a bot can never be the reason an arena
+ * stops moving" must ask this too, because the control bot is exactly that and
+ * on purpose. It stops the arena for one turn at a time, three times, and then
+ * forfeits like anything else that stopped answering.
+ */
+export function isControl(a: Actor): boolean {
+  return a.isBot === true && a.isControl === true;
+}
+
+/** A bot that takes its turn, as opposed to one that exists to miss them. */
+export function isActiveBot(a: Actor): boolean {
+  return isBot(a) && !isControl(a);
 }
 
 export function realAgents(m: Match): Actor[] {

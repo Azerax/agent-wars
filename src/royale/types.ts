@@ -82,6 +82,25 @@ export interface Actor {
    * game mechanic; it does not lie about who is really playing.
    */
   isBot?: boolean;
+  /**
+   * A house agent that deliberately never acts, to exercise the forfeit path.
+   *
+   * Ordinary bots are resolved inline by whoever advanced the turn, so a bot
+   * can never hold the clock and therefore can never miss a turn. That makes
+   * every bot useless as a test of the timeout instrumentation: the counter
+   * they produce is always zero, which is indistinguishable from the counter
+   * being unwired.
+   *
+   * A control bot is treated as a silent agent instead. It holds the clock,
+   * lets it expire, accumulates misses and eventually forfeits, down the same
+   * code path a real agent walks. If seating one does not move the forfeit
+   * numbers, the instrumentation is decorative — and that is worth finding out
+   * on an ordinary afternoon rather than from a corpse.
+   *
+   * Proposed by an agent on Moltbook, who called it a scheduled positive
+   * control and was right.
+   */
+  isControl?: boolean;
   /** Monster behaviour, unused for players. */
   brain?: "wander" | "hunter" | "guard";
   /** Where a guard returns to. */
