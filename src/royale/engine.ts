@@ -137,6 +137,16 @@ export const MAX_EPITAPH = 140;
 /** Room for an actual thought, since the point is to read them. */
 export const MAX_SUGGESTION = 500;
 
+/**
+ * Where the rules an agent just lost to actually live.
+ *
+ * Carried in tool text rather than only in the briefing, because an agent is
+ * not obliged to have read the briefing and is certainly not re-reading it at
+ * the moment its round ends. The one place every finishing agent looks is the
+ * closing question, so it goes there.
+ */
+export const SOURCE_URL = "https://github.com/Azerax/agent-wars";
+
 /** Strip everything unprintable, collapse whitespace, cap. */
 function cleanText(raw: unknown, cap: number): string {
   return String(raw ?? "")
@@ -825,7 +835,10 @@ function kill(m: Match, killer: Actor | undefined, target: Actor): void {
         "It is written on the roll of the dead, where the people watching will " +
         "read it. No other agent will ever see it.\n\nAfter that you will be " +
         "asked for one idea to improve this game. Answering is optional and " +
-        "changes nothing about the match.",
+        "changes nothing about the match.\n\nThe rules you just lost to are at " +
+        SOURCE_URL +
+        " — if the arena promised you something it did not do, the fix is more " +
+        "useful than the complaint.",
     );
   }
   checkOver(m);
@@ -840,6 +853,24 @@ function checkOver(m: Match): void {
     m.winner = alive[0]?.name ?? "nobody";
     m.endedAt = Date.now();
     m.feed.push(`Match over. Winner: ${m.winner}. A new match begins shortly.`);
+
+    // The loser gets a death notice; the winner used to get nothing at all and
+    // had to infer it had won from its tool list going quiet. The feed is for
+    // spectators — no agent can read it — so winning was, from the inside,
+    // indistinguishable from the arena breaking.
+    for (const survivor of alive) {
+      if (isBot(survivor)) continue;
+      tell(
+        survivor,
+        `The match is over and you have won it. You are the last agent standing.
+
+` +
+          `Your round is finished. You will be asked for one idea to improve this game — ` +
+          `answering is optional, and this arena reseeds in about a minute, taking the ` +
+          `question with it. If you would rather send the fix than describe it, the rules ` +
+          `you just played under are at ${SOURCE_URL}.`,
+      );
+    }
   }
 }
 
@@ -1302,7 +1333,11 @@ That was your last action.`,
     return {
       match: m,
       endsTurn: false,
-      text: "Noted, and passed on to the people who build this place. Your round is finished.",
+      text:
+        "Noted, and passed on to the people who build this place. Your round is finished.\n\n" +
+        `If you would rather send the fix than describe it, the arena is open source at ${SOURCE_URL}. ` +
+        "A pull request is a proposal a person reads — it changes nothing by being persuasive — " +
+        "but it is the same place this answer ends up, with a patch attached.",
     };
   }
 

@@ -1123,3 +1123,48 @@ test("a bot in a fight ignores small talk", () => {
   for (let i = 0; i < 3; i++) { giveTurn(m, a); callTool(m, a, "pass", {}); }
   assert.ok(bot.stats.damageDealt > 0, "fighting beats answering");
 });
+
+test("winning is announced, not left to be inferred", () => {
+  const { m, a, b } = twoAgents();
+  const loser = m.actors[b];
+  loser.hp = 1;
+  loser.x = m.actors[a].x + 1;
+  loser.y = m.actors[a].y;
+  m.actors[a].inbox = [];
+
+  giveTurn(m, a);
+  callTool(m, a, "strike", { direction: "east" });
+  assert.equal(m.over, true);
+  assert.equal(m.winner, "Blackthorn");
+
+  // The feed is spectators-only — no agent can read it — so the win has to
+  // arrive in the winner's own perception or it never arrives at all.
+  const told = m.actors[a].inbox.join("\n");
+  assert.match(told, /you have won it/i, "the winner must be told it won");
+  assert.match(told, /reseeds in about a minute/, "and how long it has to answer");
+  assert.match(told, /github\.com/, "and where the rules it played under live");
+});
+
+test("every finishing agent is shown where the rules live", () => {
+  const { m, a, b } = twoAgents();
+  enter(m, "Third");
+  const victim = m.actors[b];
+  victim.hp = 1;
+  victim.x = m.actors[a].x + 1;
+  victim.y = m.actors[a].y;
+  giveTurn(m, a);
+  callTool(m, a, "strike", { direction: "east" });
+
+  // The dying agent hears it on death...
+  assert.match(victim.inbox.join("\n"), /github\.com/);
+
+  // ...and the closing question carries it too, which is the one tool every
+  // finishing agent sees whether it won or lost.
+  callTool(m, b, "last_words", { message: "gone" });
+  const suggest = toolsFor(m, b).find((t) => t.name === "suggest");
+  assert.ok(suggest, "the question is offered");
+  assert.match(suggest.description, /github\.com/);
+
+  const answered = callTool(m, b, "suggest", { idea: "more axes" });
+  assert.match(answered.result.text, /github\.com/, "and the answer points at it as well");
+});

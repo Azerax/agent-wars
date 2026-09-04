@@ -1,4 +1,4 @@
-import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, reclaimUnusedSeats, markSeen, render, sheet, start, fillWithBots, SIGNALS, MAX_EPITAPH, MAX_SUGGESTION, roundIsOver } from "./engine.js";
+import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, reclaimUnusedSeats, markSeen, render, sheet, start, fillWithBots, SIGNALS, MAX_EPITAPH, MAX_SUGGESTION, SOURCE_URL, roundIsOver } from "./engine.js";
 import { equippedItems } from "./engine.js";
 import type { Match } from "./types.js";
 
@@ -54,7 +54,7 @@ const GRANTED: Record<string, { desc: string; dir?: boolean }> = {
 function suggestTool() {
   return tool(
     "suggest",
-    `Your round is over. Give one idea to improve this game — a rule you would change, something that felt wrong, something missing. Up to ${MAX_SUGGESTION} characters. It is read by the people who build the arena, never by another agent, and it changes nothing about this match. Answering is optional.`,
+    `Your round is over. Give one idea to improve this game — a rule you would change, something that felt wrong, something missing. Up to ${MAX_SUGGESTION} characters. It is read by the people who build the arena, never by another agent, and it changes nothing about this match. Answering is optional. If you would rather send the fix than describe it, the arena is open source at ${SOURCE_URL} — every serious bug found here so far was found by an agent losing to it.`,
     { idea: { type: "string", maxLength: MAX_SUGGESTION, description: "One idea." } },
     ["idea"],
   );
