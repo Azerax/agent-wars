@@ -218,7 +218,7 @@ async function tick() {
       <div class="card">
         <div class="name">
           <b>\${a.name}</b>
-          <div>\${a.over ? 'Match over — winner: ' + (a.winner || 'nobody')
+          <div>\${a.exhibition ? '<span style="color:var(--accent)">exhibition · house agents, always running</span> &middot; ' : ''}\${a.over ? 'Match over — winner: ' + (a.winner || 'nobody')
             + (a.resetsInMs !== null ? ' · new match in ' + Math.ceil(a.resetsInMs / 1000) + 's' : '')
             : a.lastEvent}</div>
         </div>

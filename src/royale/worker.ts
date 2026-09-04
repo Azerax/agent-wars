@@ -11,7 +11,7 @@
  */
 import {
   createMatch, render, sheet, statsOf, titleFor, maybeRespawn, mobTargetFor, hydrate,
-  matchShouldReset, resetsIn, MAX_PLAYERS,
+  matchShouldReset, resetsIn, MAX_PLAYERS, openExhibition, stepExhibition,
 } from "./engine.js";
 import { callTool, toolsFor, seat } from "./mcp.js";
 import { chooseName } from "./engine.js";
@@ -35,6 +35,24 @@ export interface Env {
 }
 
 /** Fixed arenas for v0.1. Matchmaking is a later problem. */
+/**
+ * One arena runs continuously, house against house.
+ *
+ * Bots only fill a seat when a real agent turns up, which meant a visitor
+ * arriving from a link found eight rooms reading 0/8 and "Quiet." — no
+ * evidence the thing works and nothing to watch while deciding whether to
+ * point an agent at it. The exhibition is always mid-fight. Matchmaking
+ * avoids it unless everywhere else is full, so nobody is sent to spectate
+ * when they came to play.
+ */
+export const EXHIBITION = "the-shambles";
+
+/** How often the exhibition advances a turn, in ms. Readable, not frantic. */
+const EXHIBITION_TICK_MS = 1_500;
+
+/** Turns one request may advance, so a long quiet spell cannot cost a burst. */
+const EXHIBITION_MAX_STEPS = 12;
+
 export const ARENAS = [
   { id: "ruined-market", name: "The Ruined Market" },
   { id: "ash-quarry", name: "Ash Quarry" },
@@ -140,6 +158,8 @@ interface Stored {
   matchNumber: number;
   /** Display name, remembered so a retiring match can label its rows. */
   arenaName?: string;
+  /** Wall-clock ms the exhibition last advanced a turn. */
+  exhibitionTickAt?: number;
   /**
    * What survives a reseed. Epitaphs and ideas are the point of the whole
    * closing sequence, so they must not be wiped every time the map turns over.
@@ -197,6 +217,29 @@ export class Arena {
     this.env = env;
   }
 
+  /** Set by the router, because a Durable Object does not know its own name. */
+  private isExhibition = false;
+
+  /**
+   * Keep the exhibition moving, paced by the wall clock rather than by how
+   * many people happen to be watching. Ten spectators polling once a second
+   * must not make the fight run ten times faster, and nobody watching at all
+   * must not make it run at once when somebody finally looks.
+   */
+  private runExhibition(now: number): void {
+    const store = this.cache!;
+    openExhibition(store.match);
+    const last = store.exhibitionTickAt ?? now - EXHIBITION_TICK_MS;
+    const due = Math.floor((now - last) / EXHIBITION_TICK_MS);
+    if (due <= 0) return;
+
+    const steps = Math.min(due, EXHIBITION_MAX_STEPS);
+    for (let i = 0; i < steps; i++) {
+      if (!stepExhibition(store.match)) break;
+    }
+    store.exhibitionTickAt = now;
+  }
+
   /** Spend a token from an in-arena bucket, dropping it once it has refilled. */
   private spend(id: string, limit: Limit, now: number): { ok: boolean; retryAfterMs: number } {
     const store = this.cache!;
@@ -249,6 +292,7 @@ export class Arena {
     // something, and an arena nobody is watching does not need a fresh map.
     if (matchShouldReset(this.cache.match, now)) await this.retire();
     maybeRespawn(this.cache.match, now);
+    if (this.isExhibition) this.runExhibition(now);
     return this.cache;
   }
 
@@ -330,6 +374,7 @@ export class Arena {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const op = url.searchParams.get("op");
+    this.isExhibition = url.searchParams.get("exhibition") === "1";
     const store = await this.load();
     const label = url.searchParams.get("arena");
     if (label) store.arenaName = label;
@@ -690,6 +735,7 @@ export class Arena {
       mobTarget: mobTargetFor(m),
       over: m.over,
       winner: m.winner ?? null,
+      exhibition: this.isExhibition,
       resetsInMs: resetsIn(m, Date.now()),
       fallen: m.deaths.filter((d) => d.title !== "").length,
       lastEvent: m.feed[m.feed.length - 1] ?? "Quiet.",
@@ -742,6 +788,11 @@ export class Arena {
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
+
+/** The exhibition flag, so the object knows to keep itself moving. */
+function ex(id: string): string {
+  return id === EXHIBITION ? "&exhibition=1" : "";
+}
 
 function arenaStub(env: Env, id: string) {
   return env.ARENA.get(env.ARENA.idFromName(id));
@@ -837,7 +888,7 @@ export default {
       const rows = await Promise.all(
         ARENAS.map(async (a) => {
           const res = await arenaStub(env, a.id).fetch(
-            new Request(`https://arena/?op=recent&arena=${encodeURIComponent(a.name)}`),
+            new Request(`https://arena/?op=recent&arena=${encodeURIComponent(a.name)}${ex(a.id)}`),
           );
           return (await res.json()) as any;
         }),
@@ -886,13 +937,18 @@ export default {
       const summaries = await Promise.all(
         ARENAS.map(async (a) => {
           const res = await arenaStub(env, a.id).fetch(
-            new Request(`https://arena/?op=summary&arena=${a.id}`),
+            new Request(`https://arena/?op=summary&arena=${a.id}${ex(a.id)}`),
           );
           return { ...(await res.json() as any), id: a.id, name: a.name };
         }),
       );
 
-      const open = summaries.filter((a) => !a.over && a.agents < a.capacity);
+      // The exhibition is for watching. Send an agent there only when every
+      // other arena is full, so nobody who came to play gets a seat in a
+      // demonstration.
+      const playable = summaries.filter((a) => a.id !== EXHIBITION);
+      const open = (playable.some((a) => !a.over && a.agents < a.capacity) ? playable : summaries)
+        .filter((a) => !a.over && a.agents < a.capacity);
       if (!open.length) {
         return json({ error: "Every arena is full. Try again in a minute — matches turn over." }, 503);
       }
@@ -906,7 +962,7 @@ export default {
       )[0];
 
       const res = await arenaStub(env, best.id).fetch(
-        new Request(`https://arena/?op=register&arena=${best.id}&addr=${encodeURIComponent(addressOf(request))}`, {
+        new Request(`https://arena/?op=register&arena=${best.id}&addr=${encodeURIComponent(addressOf(request))}${ex(best.id)}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: "{}",
@@ -938,7 +994,7 @@ export default {
       const rows = await Promise.all(
         ARENAS.map(async (a) => {
           const res = await arenaStub(env, a.id).fetch(
-            new Request(`https://arena/?op=recent&arena=${encodeURIComponent(a.name)}`),
+            new Request(`https://arena/?op=recent&arena=${encodeURIComponent(a.name)}${ex(a.id)}`),
           );
           return (await res.json()) as any;
         }),
@@ -985,7 +1041,7 @@ export default {
       const rows = await Promise.all(
         ARENAS.map(async (a) => {
           const res = await arenaStub(env, a.id).fetch(
-            new Request(`https://arena/?op=summary&arena=${a.id}`),
+            new Request(`https://arena/?op=summary&arena=${a.id}${ex(a.id)}`),
           );
           return { ...(await res.json() as object), id: a.id, name: a.name };
         }),
@@ -998,7 +1054,7 @@ export default {
       const [, id, op] = api;
       if (!ARENAS.some((a) => a.id === id)) return json({ error: "No such arena." }, 404);
       return arenaStub(env, id).fetch(
-        new Request(`https://arena/?op=${op}&arena=${id}&addr=${encodeURIComponent(addressOf(request))}`, {
+        new Request(`https://arena/?op=${op}&arena=${id}&addr=${encodeURIComponent(addressOf(request))}${ex(id)}`, {
           method: request.method,
           headers: request.headers,
           body: request.method === "POST" ? await request.text() : undefined,
@@ -1012,7 +1068,7 @@ export default {
       if (!ARENAS.some((a) => a.id === mcp[1])) return json({ error: "No such arena." }, 404);
       if (request.method === "GET") return new Response("POST JSON-RPC here.", { status: 405 });
       return arenaStub(env, mcp[1]).fetch(
-        new Request(`https://arena/?addr=${encodeURIComponent(addressOf(request))}`, {
+        new Request(`https://arena/?addr=${encodeURIComponent(addressOf(request))}${ex(mcp[1])}`, {
           method: "POST",
           headers: request.headers,
           body: await request.text(),

@@ -77,9 +77,16 @@ export function nextBotName(m: Match): string | undefined {
  * not pile in to make a crowd, because eight machines fighting each other is a
  * screensaver, not a competition.
  */
-export function botsWanted(m: Match, seated: number, bots: number): number {
+export function botsWanted(m: Match, seated: number, bots: number, floor = 0): number {
   const real = seated - bots;
-  if (real === 0) return 0; // an arena nobody is in needs no theatre
-  const shortfall = MIN_COMBATANTS - seated;
+  // An ordinary arena nobody is in needs no theatre. The exhibition arena is
+  // the exception: it is theatre on purpose, so that somebody arriving at the
+  // site sees a game rather than eight empty rooms.
+  if (real === 0 && floor === 0) return 0;
+  const want = Math.max(MIN_COMBATANTS, floor);
+  const shortfall = want - seated;
   return Math.max(0, Math.min(shortfall, MAX_BOTS - bots));
 }
+
+/** How many house agents the exhibition keeps on the board. */
+export const DEMO_BOTS = 3;

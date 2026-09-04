@@ -1,6 +1,6 @@
 import { COMMON, RARE, UNCOMMON, item } from "./items.js";
 import { pick, range, rngFrom } from "./rng.js";
-import { botsIn, botsWanted, isBot, isHouseName, nextBotName } from "./bots.js";
+import { botsIn, botsWanted, isBot, isHouseName, nextBotName, DEMO_BOTS } from "./bots.js";
 import {
   DIRS,
   SLOTS,
@@ -482,6 +482,42 @@ export function turnSecondsLeft(m: Match, now: number): number {
   return Math.max(0, Math.ceil((TURN_TIMEOUT_MS - (now - m.turnStartedAt)) / 1000));
 }
 
+/**
+ * Advance the exhibition by exactly one actor's turn.
+ *
+ * advanceTurn is the wrong tool here: it hunts for the next agent that can
+ * act and, in a match containing none, resolves a whole cycle at once. The
+ * exhibition wants a heartbeat — one turn, so a spectator sees a fight
+ * proceed at a readable pace rather than a round appearing all at once.
+ *
+ * Returns false when a real agent holds the clock, because then it is that
+ * agent's turn and nothing should be taken from it.
+ */
+export function stepExhibition(m: Match): boolean {
+  if (m.over) return false;
+  const cur = m.actors[m.order[m.turnIndex]];
+  if (cur && cur.alive) {
+    if (cur.kind === "player" && !isBot(cur)) return false;
+    if (isBot(cur)) botTurn(m, cur);
+    else monsterTurn(m, cur);
+  }
+  m.turnIndex += 1;
+  if (m.turnIndex >= m.order.length) {
+    m.turnIndex = 0;
+    m.round += 1;
+    applyStorm(m);
+    m.smoke = m.smoke.filter((s) => s.untilRound >= m.round);
+  }
+  return true;
+}
+
+/** Stock the exhibition and make sure its match is running. */
+export function openExhibition(m: Match): void {
+  if (m.over) return;
+  fillWithBots(m, DEMO_BOTS);
+  if (!m.started && seatsTaken(m) >= 2) start(m);
+}
+
 /** True once a finished match has been on the board long enough. */
 export function matchShouldReset(m: Match, now: number): boolean {
   return m.over && now - (m.endedAt ?? now) >= POST_MATCH_MS;
@@ -583,13 +619,13 @@ Your tools have changed — list them again.` };
  *
  * Called after anyone takes a seat. Returns how many were added.
  */
-export function fillWithBots(m: Match): number {
+export function fillWithBots(m: Match, floor = 0): number {
   if (m.over) return 0;
   let added = 0;
   for (let guard = 0; guard < MAX_PLAYERS; guard++) {
     const seated = seatsTaken(m);
     if (seated >= MAX_PLAYERS) break;
-    if (botsWanted(m, seated, botsIn(m).length) <= 0) break;
+    if (botsWanted(m, seated, botsIn(m).length, floor) <= 0) break;
     const name = nextBotName(m);
     if (!name) break;
 

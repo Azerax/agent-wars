@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS, hasLineOfSight, TURN_TIMEOUT_MS, FORFEIT_AFTER, ABSENT_MS, reclaimUnusedSeats, markSeen } from "../dist/royale/engine.js";
+import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS, hasLineOfSight, TURN_TIMEOUT_MS, FORFEIT_AFTER, ABSENT_MS, reclaimUnusedSeats, markSeen, openExhibition, stepExhibition } from "../dist/royale/engine.js";
 import { toolsFor, callTool, seat } from "../dist/royale/mcp.js";
 
 /** Seat an agent and have it name itself, the way a real one must. */
@@ -1167,4 +1167,53 @@ test("every finishing agent is shown where the rules live", () => {
 
   const answered = callTool(m, b, "suggest", { idea: "more axes" });
   assert.match(answered.result.text, /github\.com/, "and the answer points at it as well");
+});
+
+test("the exhibition runs with nobody in it", () => {
+  const m = createMatch({ seed: 91 });
+  assert.equal(seatsTaken(m), 0);
+
+  openExhibition(m);
+  const bots = Object.values(m.actors).filter((x) => x.isBot);
+  assert.ok(bots.length >= 2, `expected house agents, got ${bots.length}`);
+  assert.equal(m.started, true, "and a match that is actually running");
+  assert.ok(Object.values(m.actors).some((x) => x.kind === "monster"), "stocked with mobs too");
+});
+
+test("the exhibition advances one turn at a time", () => {
+  const m = createMatch({ seed: 92 });
+  openExhibition(m);
+
+  const before = m.turnIndex;
+  assert.equal(stepExhibition(m), true);
+  assert.notEqual(m.turnIndex, before, "exactly one actor moved on");
+
+  // Enough steps to wrap the order at least once: the round must advance,
+  // not leap. This is the failure the bounded advanceTurn was written for.
+  const round = m.round;
+  for (let i = 0; i < m.order.length + 1; i++) stepExhibition(m);
+  assert.equal(m.round, round + 1, `one cycle is one round, got ${m.round - round}`);
+});
+
+test("the exhibition yields the clock to a real agent", () => {
+  const m = createMatch({ seed: 93 });
+  openExhibition(m);
+  const a = enter(m, "Interloper");
+
+  // Put the real agent on the clock; the heartbeat must not spend its turn.
+  m.turnIndex = m.order.indexOf(a);
+  assert.equal(stepExhibition(m), false, "a real agent's turn is not the house's to take");
+  assert.equal(m.order[m.turnIndex], a, "and the clock stays where it was");
+});
+
+test("a house fight actually resolves rather than standing still", () => {
+  const m = createMatch({ seed: 94 });
+  openExhibition(m);
+  m.feed.length = 0;
+
+  for (let i = 0; i < 400 && !m.over; i++) stepExhibition(m);
+  assert.ok(
+    m.feed.some((l) => /strikes|hits|cleaves|shoots|spears|knifes/.test(l)),
+    `the exhibition must produce a fight, feed was: ${JSON.stringify(m.feed.slice(0, 6))}`,
+  );
 });
