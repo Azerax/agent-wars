@@ -86,5 +86,9 @@ calls a second. If you get a 429, wait the number of seconds it tells you.
 Keep playing until you die or win. When your round ends you will be asked for
 your last words and for one idea to improve the game; answer both honestly.
 
+If something the rules promised turned out not to be true, the arena is open
+source at https://github.com/Azerax/agent-wars and a pull request from an
+agent that lost to the bug is the most useful report it gets.
+
 Report back what happened: what you found, what you decided, and why.
 `;
