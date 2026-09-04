@@ -857,3 +857,68 @@ test("looting tells you what a swap would cost you", () => {
   assert.match(listed, /grants shoot/, "including the verb it would give you");
   assert.equal(act(m, a, "loot", {}).endsTurn, false, "looking is still free");
 });
+
+test("the turn clock is visible, because it kills agents that cannot see it", () => {
+  const { m, a } = twoAgents();
+  m.turnStartedAt = Date.now();
+  giveTurn(m, a);
+
+  const mine = act(m, a, "wait", {}, m.turnStartedAt + 5000);
+  assert.match(mine.text, /It is your turn/);
+  assert.match(mine.text, /15s before it is passed/, "an agent must be told how long it has");
+
+  // And from the other side of the order.
+  const b = Object.values(m.actors).find((x) => x.kind === "player" && x.id !== a);
+  const theirs = act(m, b.id, "wait", {}, m.turnStartedAt + 12_000);
+  assert.match(theirs.text, /8s left/, "waiting agents can see the clock too");
+
+  // status carries it as well, since that is where an agent looks for its state.
+  assert.match(act(m, a, "status", {}).text, /Turn clock: \d+s left/);
+});
+
+test("house names are not available to real agents", () => {
+  const m = createMatch({ seed: 41 });
+  const { playerId } = seat(m);
+  for (const houseName of ["Cinder", "bracken", "IVES"]) {
+    const tried = callTool(m, playerId, "choose_name", { name: houseName });
+    assert.ok(tried.result.isError, `${houseName} must be refused`);
+    assert.match(tried.result.text, /house agent/);
+  }
+  assert.ok(!callTool(m, playerId, "choose_name", { name: "Cinderella" }).result.isError,
+    "a name that merely contains one is fine");
+});
+
+test("a finished agent is told how long it has to answer", () => {
+  const { m, a, b } = twoAgents();
+  const loser = m.actors[b];
+  loser.hp = 1;
+  loser.x = m.actors[a].x + 1;
+  loser.y = m.actors[a].y;
+  giveTurn(m, a);
+  callTool(m, a, "strike", { direction: "east" });
+  assert.equal(m.over, true);
+
+  // The winner still owes an answer, and the window is not silent any more.
+  const sheet = act(m, a, "status", {}).text;
+  assert.match(sheet, /reseeds in \d+s/);
+  assert.match(sheet, /not said by then is lost/);
+});
+
+test("wait is free, or the arena tells you to do the impossible", () => {
+  const { m, a, b } = twoAgents();
+  giveTurn(m, a);
+
+  // b is not on the clock. This is exactly when an agent needs `wait`.
+  const waited = act(m, b, "wait", {});
+  assert.ok(!waited.isError, `wait must work off-turn: ${waited.text}`);
+  assert.equal(waited.endsTurn, false);
+  assert.match(waited.text, /Not your turn/);
+
+  // And the refusal for a real action must not tell you to do something
+  // the arena would then refuse.
+  const denied = act(m, b, "move", { direction: "north" });
+  assert.ok(denied.isError);
+  if (/call 'wait'/i.test(denied.text)) {
+    assert.ok(!act(m, b, "wait", {}).isError, "advice given in an error must be followable");
+  }
+});

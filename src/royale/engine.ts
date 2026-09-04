@@ -1,6 +1,6 @@
 import { COMMON, RARE, UNCOMMON, item } from "./items.js";
 import { pick, range, rngFrom } from "./rng.js";
-import { botsIn, botsWanted, isBot, nextBotName } from "./bots.js";
+import { botsIn, botsWanted, isBot, isHouseName, nextBotName } from "./bots.js";
 import {
   DIRS,
   SLOTS,
@@ -357,6 +357,19 @@ export function reapIdle(m: Match, now: number): number {
   return burned;
 }
 
+/**
+ * Seconds left on the current turn before it is passed for you.
+ *
+ * The deadline existed from the start and was documented in the briefing, but
+ * nothing in the game ever said it out loud. The first outside agent to play
+ * lost six turns to it across two matches, worked out that a timer existed
+ * only from the digest afterwards, and died to it. A rule the server enforces
+ * silently is a rule the server is keeping secret.
+ */
+export function turnSecondsLeft(m: Match, now: number): number {
+  return Math.max(0, Math.ceil((TURN_TIMEOUT_MS - (now - m.turnStartedAt)) / 1000));
+}
+
 /** True once a finished match has been on the board long enough. */
 export function matchShouldReset(m: Match, now: number): boolean {
   return m.over && now - (m.endedAt ?? now) >= POST_MATCH_MS;
@@ -424,6 +437,9 @@ export function chooseName(m: Match, playerId: string, raw: string): { ok: boole
       ok: false,
       text: "A name is 2 to 16 English letters, nothing else. No digits, spaces or punctuation.",
     };
+  }
+  if (isHouseName(name)) {
+    return { ok: false, text: `${name} is a house agent's name. Choose one of your own.` };
   }
   const taken = Object.values(m.actors).some(
     (o) => o.named && o.name.toLowerCase() === name.toLowerCase(),
@@ -1082,6 +1098,7 @@ export function act(
   playerId: string,
   action: string,
   args: Record<string, unknown>,
+  now: number = Date.now(),
 ): ActionResult {
   const a = m.actors[playerId];
   if (!a) return bad(m, "You are not in this match.");
@@ -1144,10 +1161,15 @@ That was your last action.`,
 
   // Naming is free and turn-independent: an agent joining a match in progress
   // must be able to name itself immediately, not wait for a clock it is not on.
+  // `wait` has to be free, and was not. An agent whose turn it is not was
+  // refused with "call 'wait' to find out when you are up" — an instruction
+  // to call the very thing being refused. The briefing promised it was free
+  // the whole time; only the code disagreed.
   const free =
     action === "look" ||
     action === "status" ||
     action === "loot" ||
+    action === "wait" ||
     action === "choose_name";
   if (!a.alive && action !== "look" && action !== "status") {
     return bad(
@@ -1168,7 +1190,7 @@ That was your last action.`,
   const fromX = a.x;
   const fromY = a.y;
   const fromBlood = a.stats.damageDealt + a.stats.damageTaken;
-  const result = resolve(m, a, action, args);
+  const result = resolve(m, a, action, args, now);
   if (result.isError) return result;
 
   if (result.endsTurn) {
@@ -1183,7 +1205,13 @@ That was your last action.`,
   return result;
 }
 
-function resolve(m: Match, a: Actor, action: string, args: Record<string, unknown>): ActionResult {
+function resolve(
+  m: Match,
+  a: Actor,
+  action: string,
+  args: Record<string, unknown>,
+  now: number = Date.now(),
+): ActionResult {
   switch (action) {
     case "choose_name": {
       const outcome = chooseName(m, a.id, String(args.name ?? ""));
@@ -1409,12 +1437,24 @@ function resolve(m: Match, a: Actor, action: string, args: Record<string, unknow
         ? ""
         : " The match has not started: it needs a second agent before the storm closes, before the floor burns, and before anyone can win. The mobs are real in the meantime.";
       const cur = currentActorId(m);
-      if (cur === a.id) return { match: m, text: "It is your turn. Act." + lobby, endsTurn: false };
+      const left = turnSecondsLeft(m, now);
+      const missed = a.inbox.length
+        ? "\n\nSince you last acted:\n" + a.inbox.map((l) => "  " + l).join("\n")
+        : "";
+      if (cur === a.id) {
+        return {
+          match: m,
+          endsTurn: false,
+          text: `It is your turn. Act. You have ${left}s before it is passed for you.${lobby}${missed}`,
+        };
+      }
       const ahead = queueAhead(m, a.id);
       return {
         match: m,
         endsTurn: false,
-        text: `Not your turn yet. ${ahead} to go. Round ${m.round}.${a.inbox.length ? "\n\nSince you last acted:\n" + a.inbox.map((l) => "  " + l).join("\n") : ""}`,
+        text:
+          `Not your turn yet. ${ahead} to go. Round ${m.round}. ` +
+          `Whoever holds the clock has ${left}s left.${lobby}${missed}`,
       };
     }
 
@@ -1572,6 +1612,11 @@ export function titleFor(a: Actor): string {
   return "the Unproven";
 }
 
+/** The sheet is rendered without a clock argument; this keeps it honest. */
+function nowFor(_m: Match): number {
+  return Date.now();
+}
+
 export function sheet(m: Match, a: Actor): string {
   const st = statsOf(a);
   const gear = SLOTS.map((s) => {
@@ -1581,6 +1626,12 @@ export function sheet(m: Match, a: Actor): string {
     const ch = it.charges ? ` — ${a.charges[id] ?? 0} charges left` : "";
     return `  ${s.padEnd(8)} ${it.name}${ch}`;
   });
+  const closing =
+    m.over && !a.spentSuggestion
+      ? `
+This arena reseeds in ${Math.ceil((resetsIn(m, Date.now()) ?? 0) / 1000)}s. ` +
+        `Anything you have not said by then is lost.`
+      : "";
   return [
     `${a.name} ${titleFor(a)} — ${a.hp}/${st.maxHp} HP, atk ${st.atk}, def ${st.def}, speed ${st.speed}, kills ${a.kills}`,
     a.alive ? "" : "  DEAD.",
@@ -1589,7 +1640,12 @@ export function sheet(m: Match, a: Actor): string {
     ...gear,
     "",
     `Your verbs: ${grantedActions(a).join(", ")}`,
+    closing,
     `Turn order position: ${queueAhead(m, a.id)} to go.`,
+    a.alive && !m.over
+      ? `Turn clock: ${turnSecondsLeft(m, nowFor(m))}s left on the current turn. ` +
+        `A turn you do not use is passed for you and counted as missed.`
+      : "",
     `Turns on this tile: ${a.stillTurns}. The floor burns anything that has not moved in ${LAVA_AFTER}.`,
   ]
     .filter((l) => l !== "")

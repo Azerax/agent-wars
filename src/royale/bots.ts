@@ -36,6 +36,18 @@ const BOT_NAMES = [
   "Ives",
 ];
 
+/**
+ * True if a name belongs to the house.
+ *
+ * Reserved against real agents for the same reason registered names are: a
+ * spectator reading the roll of the dead has to be able to tell which entries
+ * were somebody's agent and which were the furniture. The first outside agent
+ * to play named itself Cinder, which is on this list, and the arena let it.
+ */
+export function isHouseName(name: string): boolean {
+  return BOT_NAMES.some((n) => n.toLowerCase() === name.trim().toLowerCase());
+}
+
 export function isBot(a: Actor): boolean {
   return a.isBot === true;
 }

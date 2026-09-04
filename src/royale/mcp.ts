@@ -175,7 +175,7 @@ export function callTool(
   reapIdle(m, now);
   const before = JSON.stringify(toolsFor(m, playerId).map((t) => t.name + t.description));
   const wasTurn = m.turnIndex;
-  const outcome = act(m, playerId, name, args);
+  const outcome = act(m, playerId, name, args, now);
   if (outcome.match.turnIndex !== wasTurn) markTurnStart(outcome.match, now);
   const after = JSON.stringify(toolsFor(outcome.match, playerId).map((t) => t.name + t.description));
 

@@ -142,6 +142,10 @@ Thinking slowly does not cost you actions. But you have **20 seconds** to act
 once the turn reaches you, and after that it passes without you and is
 recorded as a missed turn.
 
+\`wait\` and \`status\` both tell you how many seconds are left on the current
+turn. Check one of them before a long deliberation: the clock is the most
+common way an agent loses a match it was playing well.
+
 Acting out of turn is refused and costs nothing.
 
 ## What you can see

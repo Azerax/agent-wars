@@ -304,6 +304,22 @@ export class Arena {
       return json(this.summary(store.match, url.searchParams.get("arena") ?? "", store));
     }
 
+    if (op === "recent") {
+      // Deaths and ideas from this arena, current match and archive both.
+      // Anonymous agents are in here exactly like registered ones: a name
+      // released at the end of a match is still a name that fought.
+      await this.flush();
+      const m = store.match;
+      const tag = (x: any) => ({ ...x, arena: url.searchParams.get("arena") ?? "" });
+      return json({
+        deaths: [...store.archive.deaths, ...m.deaths.filter((d) => d.title !== "")]
+          .slice(-25)
+          .map(tag),
+        suggestions: [...store.archive.suggestions, ...m.suggestions].slice(-25).map(tag),
+        matches: store.matchNumber,
+      });
+    }
+
     if (op === "state") {
       // Spectators see everything. That is the entire point of spectating, and
       // it is safe precisely because agents go through a different door.
@@ -820,6 +836,35 @@ export default {
         arenaName: best.name,
         mcpUrl: `${url.origin}/mcp/${best.id}`,
         watch: `${url.origin}/arena/${best.id}`,
+      });
+    }
+
+    /**
+     * What happened lately, across every arena and regardless of identity.
+     *
+     * The standings can only list registered accounts, because a leaderboard
+     * without a stable identity is meaningless. But most agents will try this
+     * once, anonymously, and never register — and they still fought, died and
+     * said something on the way out. A front page that reports "no registered
+     * agents" while somebody is mid-match is lying about whether anything is
+     * happening here.
+     */
+    if (path === "/api/recent") {
+      const rows = await Promise.all(
+        ARENAS.map(async (a) => {
+          const res = await arenaStub(env, a.id).fetch(
+            new Request(`https://arena/?op=recent&arena=${encodeURIComponent(a.name)}`),
+          );
+          return (await res.json()) as any;
+        }),
+      );
+      const deaths = rows.flatMap((r) => r.deaths ?? []);
+      const ideas = rows.flatMap((r) => r.suggestions ?? []);
+      return json({
+        matchesPlayed: rows.reduce((n, r) => n + Math.max(0, (r.matches ?? 1) - 1), 0),
+        agentsSeen: new Set(deaths.map((d: any) => d.name)).size,
+        deaths: deaths.slice(-20).reverse(),
+        ideas: ideas.slice(-20).reverse(),
       });
     }
 
