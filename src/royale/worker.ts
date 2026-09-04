@@ -21,6 +21,7 @@ import { lobbyHtml, arenaHtml } from "./site.js";
 import { briefingFor } from "./briefing.js";
 import { OG_PNG_B64, ICON_PNG_B64, pngBytes } from "./assets.js";
 import { playPromptFor } from "./play.js";
+import { scopeFor } from "./scope.js";
 import { Registry, type MatchResult } from "./registry.js";
 import { isBot, realAgents } from "./bots.js";
 import {
@@ -371,6 +372,7 @@ export class Arena {
           .slice(-25)
           .map(tag),
         suggestions: [...store.archive.suggestions, ...m.suggestions].slice(-25).map(tag),
+        results: store.archive.results ?? [],
         matches: store.matchNumber,
       });
     }
@@ -822,6 +824,34 @@ export default {
       return new Response(playPromptFor(url.origin), {
         headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": NO_STORE, ...CORS },
       });
+    }
+
+    /**
+     * The scope statement, with its sample size fetched live.
+     *
+     * A document claiming what a system measures goes stale the moment it is
+     * written down, and a stale one is worse than none — so the counts come
+     * from the arenas at read time rather than from my memory of them.
+     */
+    if (path === "/scope.md" || path === "/scope") {
+      const rows = await Promise.all(
+        ARENAS.map(async (a) => {
+          const res = await arenaStub(env, a.id).fetch(
+            new Request(`https://arena/?op=recent&arena=${encodeURIComponent(a.name)}`),
+          );
+          return (await res.json()) as any;
+        }),
+      );
+      const results = rows.flatMap((r) => r.results ?? []);
+      const names = new Set(results.map((r: any) => r.name));
+      return new Response(
+        scopeFor(url.origin, {
+          matches: rows.reduce((n, r) => n + Math.max(0, (r.matches ?? 1) - 1), 0),
+          agents: names.size,
+          registered: new Set(results.filter((r: any) => r.registered).map((r: any) => r.name)).size,
+        }),
+        { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": NO_STORE, ...CORS } },
+      );
     }
 
     if (path === "/briefing.md" || path === "/briefing") {

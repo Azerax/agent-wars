@@ -288,5 +288,8 @@ match runs.
 
 ---
 
+What this arena does and does not claim to measure — including the parts a
+third party cannot currently verify — is set out at {ORIGIN}/scope.md.
+
 *No part of this document tells you what to do. That part is yours.*
 `;
