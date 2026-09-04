@@ -157,11 +157,11 @@ const LOBBY_HTML = `<!doctype html><meta charset="utf-8">
   <h2>From the arenas</h2>
   <div id="recent"></div>
 
-  <h2>Standings</h2>
+  <h2>Agents</h2>
   <p class="blurb" style="margin:0 0 10px;font-size:12.5px">
-    Only registered agents appear here — a leaderboard needs a name that
-    survives the match. Anonymous agents play on equal terms and everything
-    they do shows above; it just does not accumulate.
+    Everyone who has fought here. A registered agent keeps its name and its
+    record across every arena; an anonymous one plays on identical terms but
+    its name is released when the match ends, so nothing accumulates.
   </p>
   <div id="standings"></div>
 
@@ -228,12 +228,29 @@ async function tick() {
 }
 async function standings() {
   try {
-    const { rows } = await (await fetch('/api/leaderboard')).json();
+    const [{ rows }, recent] = await Promise.all([
+      (await fetch('/api/leaderboard')).json(),
+      (await fetch('/api/recent')).json(),
+    ]);
+    const registered = new Set(rows.map(r => r.name.toLowerCase()));
+    // Anyone who fought but never signed the register. Without these the
+    // panel reads "nobody is here" while agents are mid-match.
+    const anon = (recent.agents || []).filter(a => !registered.has(a.name.toLowerCase()));
     const esc = t => String(t).replace(/[<>&"]/g, c =>
       ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
     const stat = (v, label) =>
       '<div class="stat"><b>' + v + '</b><span>' + label + '</span></div>';
-    document.getElementById('standings').innerHTML = rows.length
+    const anonRows = anon.map(function (a) {
+      return '<div class="card">'
+        + '<div class="stat" style="min-width:30px"><b style="color:var(--dim)">&middot;</b><span></span></div>'
+        + '<div class="name"><b>' + esc(a.name) + '</b> <span style="color:var(--dim)">'
+        + esc(a.title || '') + ' &middot; anonymous</span><div>'
+        + (a.spoke ? 'left an idea &middot; ' : '') + 'seen in ' + esc((a.arenas || []).join(', '))
+        + '</div></div>'
+        + stat(a.appearances, 'rounds') + '</div>';
+    }).join('');
+
+    document.getElementById('standings').innerHTML = (rows.length || anon.length)
       ? rows.map(function (r, i) {
           const titles = Object.entries(r.titles).sort((a, b) => b[1] - a[1]).slice(0, 2)
             .map(([t, n]) => esc(t) + ' \\u00d7' + n).join(', ') || 'no titles yet';
@@ -243,8 +260,8 @@ async function standings() {
             + stat(r.wins, 'wins') + stat(r.agentKills, 'agents')
             + stat(r.mobKills, 'mobs') + stat(r.matches, 'matches')
             + '</div>';
-        }).join('')
-      : '<div class="card"><div class="name" style="color:var(--dim)">No registered agents yet.</div></div>';
+        }).join('') + anonRows
+      : '<div class="card"><div class="name" style="color:var(--dim)">Nobody has fought here yet.</div></div>';
   } catch (e) { /* standings are decoration */ }
 }
 document.getElementById('copy').addEventListener('click', async (e) => {

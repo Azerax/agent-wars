@@ -48,7 +48,7 @@ export const POST_MATCH_MS = 60_000;
  * deadline gives every agent exactly one action per turn no matter how long it
  * thinks, while stopping one slow or dead agent from stalling the arena.
  */
-export const TURN_TIMEOUT_MS = 20_000;
+export const TURN_TIMEOUT_MS = 30_000;
 
 /**
  * Turns passed in a row before an agent forfeits.
@@ -59,6 +59,17 @@ export const TURN_TIMEOUT_MS = 20_000;
  * because the absent agent never dies.
  */
 export const FORFEIT_AFTER = 3;
+
+/**
+ * How long an agent must be silent before missed turns count as desertion.
+ *
+ * Missing turns and having left are not the same thing, and the forfeit rule
+ * could not tell them apart: an agent deliberating carefully was killed on the
+ * same schedule as one whose operator had closed the laptop. An agent that is
+ * still calling anything at all — even `wait` — is present. It is slow, which
+ * the turn clock already punishes by passing its turn; it is not gone.
+ */
+export const ABSENT_MS = 120_000;
 
 /** How long a seat may sit unnamed before it is given back. */
 export const UNNAMED_SEAT_MS = 3 * 60 * 1000;
@@ -261,6 +272,7 @@ export function hydrate(m: Match): Match {
     a.lastActedRound ??= 0;
     a.consecutiveMisses ??= 0;
     a.seatedAt ??= Date.now();
+    a.lastSeenAt ??= Date.now();
     a.bracedUntilRound ??= 0;
     a.kills ??= 0;
   }
@@ -314,6 +326,7 @@ function spawnMobs(m: Match, count: number, rand: () => number): number {
       stillTurns: 0,
       consecutiveMisses: 0,
       seatedAt: Date.now(),
+      lastSeenAt: Date.now(),
       stats: newStats(),
       brain: spec.brain,
       homeX: x,
@@ -399,7 +412,8 @@ export function reapIdle(m: Match, now: number): number {
     cur.stats.missedTurns += 1;
     cur.consecutiveMisses = (cur.consecutiveMisses ?? 0) + 1;
 
-    if (cur.consecutiveMisses >= FORFEIT_AFTER) {
+    const silentFor = now - (cur.lastSeenAt ?? cur.seatedAt ?? now);
+    if (cur.consecutiveMisses >= FORFEIT_AFTER && silentFor >= ABSENT_MS) {
       // Treated as a death so the corpse is lootable and the match can end.
       // An agent that stopped answering is not a hazard anyone should have to
       // wait out.
@@ -408,7 +422,11 @@ export function reapIdle(m: Match, now: number): number {
       kill(m, undefined, cur);
       advanceTurn(m);
     } else {
-      tell(cur, `You took too long. Your turn passed without you. ${FORFEIT_AFTER - cur.consecutiveMisses} more and you forfeit.`);
+      tell(
+        cur,
+        "You took too long and your turn was passed. You are still in the match — " +
+          "turns are only forfeited by agents that stop answering altogether.",
+      );
       m.feed.push(`${cur.name} misses a turn.`);
       advanceTurn(m);
     }
@@ -440,6 +458,12 @@ export function matchShouldReset(m: Match, now: number): boolean {
 export function resetsIn(m: Match, now: number): number | null {
   if (!m.over) return null;
   return Math.max(0, POST_MATCH_MS - (now - (m.endedAt ?? now)));
+}
+
+/** Record that an agent is still there, whatever it asked for. */
+export function markSeen(m: Match, playerId: string, now: number): void {
+  const a = m.actors[playerId];
+  if (a) a.lastSeenAt = now;
 }
 
 /** Called whenever the clock moves to a new actor. */
@@ -479,6 +503,7 @@ export function join(m: Match): { match: Match; playerId: string } {
     stillTurns: 0,
     consecutiveMisses: 0,
     seatedAt: Date.now(),
+    lastSeenAt: Date.now(),
     stats: newStats(),
     inbox: [`You wake on the ground at (${x}, ${y}). You are holding nothing.`],
   };
@@ -560,6 +585,7 @@ export function fillWithBots(m: Match): number {
       stillTurns: 0,
       consecutiveMisses: 0,
       seatedAt: Date.now(),
+      lastSeenAt: Date.now(),
       stats: newStats(),
       inbox: [],
     };

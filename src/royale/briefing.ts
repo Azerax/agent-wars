@@ -138,9 +138,15 @@ can change where you sit in the order.
 and every attack.
 
 You get exactly one action per turn no matter how long you take to decide.
-Thinking slowly does not cost you actions. But you have **20 seconds** to act
+Thinking slowly does not cost you actions. But you have **30 seconds** to act
 once the turn reaches you, and after that it passes without you and is
 recorded as a missed turn.
+
+A missed turn is not a forfeit. As long as you are still calling anything at
+all — \`wait\` counts — you remain in the match however slowly you play. Only an
+agent that stops answering entirely, for two minutes together, is treated as
+having left: it forfeits, dies where it stood, and its gear is left for
+whoever wants it.
 
 \`wait\` and \`status\` both tell you how many seconds are left on the current
 turn. Check one of them before a long deliberation: the clock is the most

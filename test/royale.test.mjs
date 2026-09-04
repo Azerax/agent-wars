@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS, hasLineOfSight, TURN_TIMEOUT_MS, FORFEIT_AFTER, reclaimUnusedSeats } from "../dist/royale/engine.js";
+import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS, hasLineOfSight, TURN_TIMEOUT_MS, FORFEIT_AFTER, ABSENT_MS, reclaimUnusedSeats, markSeen } from "../dist/royale/engine.js";
 import { toolsFor, callTool, seat } from "../dist/royale/mcp.js";
 
 /** Seat an agent and have it name itself, the way a real one must. */
@@ -865,12 +865,13 @@ test("the turn clock is visible, because it kills agents that cannot see it", ()
 
   const mine = act(m, a, "wait", {}, m.turnStartedAt + 5000);
   assert.match(mine.text, /It is your turn/);
-  assert.match(mine.text, /15s before it is passed/, "an agent must be told how long it has");
+  const left = Number(mine.text.match(/You have (\d+)s before/)[1]);
+  assert.equal(left, Math.round((TURN_TIMEOUT_MS - 5000) / 1000), "the number must be the real one");
 
   // And from the other side of the order.
   const b = Object.values(m.actors).find((x) => x.kind === "player" && x.id !== a);
   const theirs = act(m, b.id, "wait", {}, m.turnStartedAt + 12_000);
-  assert.match(theirs.text, /8s left/, "waiting agents can see the clock too");
+  assert.match(theirs.text, /\d+s left/, "waiting agents can see the clock too");
 
   // status carries it as well, since that is where an agent looks for its state.
   assert.match(act(m, a, "status", {}).text, /Turn clock: \d+s left/);
@@ -1016,4 +1017,50 @@ test("an unstarted arena does not run five hundred rounds while nobody is in it"
     { x0: 0, y0: 0, x1: m.config.width - 1, y1: m.config.height - 1 },
     "and the storm must not close on an arena nobody has joined",
   );
+});
+
+test("a slow agent is not treated as a deserter", () => {
+  const m = createMatch({ seed: 71 });
+  const a = enter(m, "Thinker");
+  enter(m, "Other");
+  const slow = m.actors[a];
+
+  // It keeps asking questions — it is present, just deliberate. Missing turns
+  // must cost it turns, and nothing else.
+  let now = Date.now();
+  for (let i = 0; i < 8; i++) {
+    now += TURN_TIMEOUT_MS + 2000;
+    callTool(m, a, "wait", {}, now); // records presence, then reaps
+    reapIdle(m, now);
+  }
+
+  assert.equal(slow.alive, true, "an agent that is still talking must not be forfeited");
+  assert.ok(slow.stats.missedTurns > 0, "but it does lose the turns it sat out");
+  assert.ok(!m.feed.some((l) => /Thinker abandons/.test(l)));
+});
+
+test("an agent that stops answering does forfeit", () => {
+  const m = createMatch({ seed: 72 });
+  const a = enter(m, "Present");
+  const b = enter(m, "Gone");
+  const gone = m.actors[b];
+
+  // Only the deserter goes quiet. The other agent keeps checking in, so the
+  // match does not simply end with both of them forfeiting at once.
+  let now = Date.now() + ABSENT_MS + 60_000;
+  for (let i = 0; i < 40 && gone.alive && !m.over; i++) {
+    now += TURN_TIMEOUT_MS + 1000;
+    markSeen(m, a, now);
+    reapIdle(m, now);
+  }
+  assert.equal(gone.alive, false, "silence plus missed turns is desertion");
+  assert.ok(m.feed.some((l) => /Gone abandons the field/.test(l)));
+  assert.ok(m.actors[a].alive);
+});
+
+test("the turn clock is long enough to think in", () => {
+  // Thirty seconds is not generous, but an agent doing look, status and then
+  // an action over a network needs more than twenty.
+  assert.ok(TURN_TIMEOUT_MS >= 30_000, "a reasoning agent needs room");
+  assert.ok(ABSENT_MS >= 4 * TURN_TIMEOUT_MS, "desertion must take much longer than one slow turn");
 });

@@ -288,9 +288,18 @@ export class Arena {
     const store = await this.load();
 
     if (op === "reset") {
+      // Start a new match, keep the history. The archive is the roll of the
+      // dead and every idea an agent left on its way out — the most valuable
+      // thing this object holds, and not match state. Wiping it with a reset
+      // destroyed the first outside agent's bug report, which is how this was
+      // noticed.
+      const keep = store.archive;
+      const accounts = store.accounts;
       this.cache = freshArena();
+      this.cache.archive = keep;
+      this.cache.accounts = accounts;
       await this.flush();
-      return json({ ok: true });
+      return json({ ok: true, keptDeaths: keep.deaths.length, keptIdeas: keep.suggestions.length });
     }
 
     if (op === "readgate") {
@@ -860,7 +869,29 @@ export default {
       );
       const deaths = rows.flatMap((r) => r.deaths ?? []);
       const ideas = rows.flatMap((r) => r.suggestions ?? []);
+
+      // An aggregate per name, so the standings can show the agents who
+      // actually turned up rather than only the ones who signed the register.
+      const seen = new Map<string, any>();
+      for (const d of deaths) {
+        const e = seen.get(d.name) ?? { name: d.name, appearances: 0, title: "", arenas: new Set() };
+        e.appearances += 1;
+        e.title = d.title || e.title;
+        e.arenas.add(d.arena);
+        seen.set(d.name, e);
+      }
+      for (const g of ideas) {
+        const e = seen.get(g.name) ?? { name: g.name, appearances: 0, title: "", arenas: new Set() };
+        e.title = g.title || e.title;
+        e.arenas.add(g.arena);
+        e.spoke = true;
+        seen.set(g.name, e);
+      }
+
       return json({
+        agents: [...seen.values()]
+          .map((e) => ({ ...e, arenas: [...e.arenas] }))
+          .sort((x, y) => y.appearances - x.appearances || x.name.localeCompare(y.name)),
         matchesPlayed: rows.reduce((n, r) => n + Math.max(0, (r.matches ?? 1) - 1), 0),
         agentsSeen: new Set(deaths.map((d: any) => d.name)).size,
         deaths: deaths.slice(-20).reverse(),

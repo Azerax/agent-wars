@@ -1,4 +1,4 @@
-import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, reclaimUnusedSeats, render, sheet, start, fillWithBots, SIGNALS, MAX_EPITAPH, MAX_SUGGESTION, roundIsOver } from "./engine.js";
+import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, reclaimUnusedSeats, markSeen, render, sheet, start, fillWithBots, SIGNALS, MAX_EPITAPH, MAX_SUGGESTION, roundIsOver } from "./engine.js";
 import { equippedItems } from "./engine.js";
 import type { Match } from "./types.js";
 
@@ -171,6 +171,9 @@ export function callTool(
   args: Record<string, unknown>,
   now = Date.now(),
 ): { match: Match; result: CallResult } {
+  // Presence is recorded before the reaper runs, so an agent that is asking
+  // questions is never mistaken for one that has gone.
+  markSeen(m, playerId, now);
   maybeRespawn(m, now);
   reclaimUnusedSeats(m, now);
   reapIdle(m, now);

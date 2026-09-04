@@ -63,6 +63,11 @@ export interface Actor {
   consecutiveMisses: number;
   /** Wall-clock ms the seat was taken, for reclaiming seats never used. */
   seatedAt: number;
+  /**
+   * Wall-clock ms of this agent's last request of any kind, free ones
+   * included. Presence, as distinct from speed.
+   */
+  lastSeenAt: number;
   /** A dead agent gets one last action. True once it has been used. */
   spentLastWords?: boolean;
   /** Every agent is asked for one idea when its round ends. Once. */
