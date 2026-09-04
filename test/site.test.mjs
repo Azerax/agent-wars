@@ -66,7 +66,7 @@ test("every page carries a share card a feed can render", () => {
       assert.ok(html.includes(tag), `${name} is missing ${tag}`);
     }
     // og:image must be absolute or the scrapers ignore it.
-    assert.match(html, /property="og:image" content="https:\/\/[^"]+\/og\.png"/);
+    assert.match(html, /property="og:image" content="https:\/\/[^"]+\/og[^"]*\.png"/);
     assert.ok(!html.includes("{HEAD}"), `${name} left its head placeholder in`);
   }
 });

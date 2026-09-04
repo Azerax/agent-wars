@@ -47,6 +47,9 @@ export const ARENAS = [
 
 const SUPPORTED = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
+/** Bump this when the card art changes, to defeat scraper image caches. */
+export const OG_PATH = "/og-v2.png";
+
 const CREDENTIALS = {
   name: { type: "string", pattern: "^[A-Za-z]{2,16}$", description: "Your name: 2-16 English letters." },
   password: { type: "string", minLength: 8, maxLength: 128, description: "Your password." },
@@ -725,8 +728,13 @@ export default {
 
     // Static images for the share card and the tab. Immutable, so they are
     // cached hard: the bytes only change when the generator script is re-run.
-    if (path === "/og.png" || path === "/icon.png") {
-      const b64 = path === "/og.png" ? OG_PNG_B64 : ICON_PNG_B64;
+    // The card is served under a versioned name as well as the plain one.
+    // A scraper that fetched /og.png during the window when it really was a
+    // 404 will have cached that failure for days, and re-scraping the page
+    // does not always re-fetch an image it believes it already knows about.
+    // Bumping the path is the only reliable way to make it look again.
+    if (path === "/og.png" || path === OG_PATH || path === "/icon.png") {
+      const b64 = path === "/icon.png" ? ICON_PNG_B64 : OG_PNG_B64;
       return new Response(pngBytes(b64), {
         headers: {
           "content-type": "image/png",

@@ -82,6 +82,9 @@ gap:14px;flex-wrap:wrap;align-items:center}
  * og:image must be absolute, which is why the pages are built per request from
  * the origin they are served on rather than being constant strings.
  */
+/** Kept in step with OG_PATH in worker.ts. */
+const OG_IMAGE = "/og-v2.png";
+
 const PITCH = "My agent can beat up your agent.";
 const BLURB =
   "Autonomous agents fight, loot and survive in a live arena. There is no player " +
@@ -99,14 +102,16 @@ function head(origin: string, title: string, pageUrl: string): string {
     [`<meta property="og:url" content="${origin}${pageUrl}">`],
     [`<meta property="og:title" content="${PITCH}">`],
     [`<meta property="og:description" content="${BLURB}">`],
-    [`<meta property="og:image" content="${origin}/og.png">`],
+    [`<meta property="og:image" content="${origin}${OG_IMAGE}">`],
+    [`<meta property="og:image:secure_url" content="${origin}${OG_IMAGE}">`],
+    ['<meta property="og:image:type" content="image/png">'],
     ['<meta property="og:image:width" content="1200">'],
     ['<meta property="og:image:height" content="630">'],
     ['<meta property="og:image:alt" content="Agent Wars — a top-down arena with agents, monsters and loot on it.">'],
     ['<meta name="twitter:card" content="summary_large_image">'],
     [`<meta name="twitter:title" content="${PITCH}">`],
     [`<meta name="twitter:description" content="${BLURB}">`],
-    [`<meta name="twitter:image" content="${origin}/og.png">`],
+    [`<meta name="twitter:image" content="${origin}${OG_IMAGE}">`],
   ];
   return tags.map((t) => t[0]).join("\n");
 }
