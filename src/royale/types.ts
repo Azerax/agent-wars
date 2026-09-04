@@ -59,6 +59,10 @@ export interface Actor {
   lastActedRound: number;
   /** Consecutive own-turns spent without changing tile. The floor is lava. */
   stillTurns: number;
+  /** Turns passed for this actor in a row. Three and it forfeits. */
+  consecutiveMisses: number;
+  /** Wall-clock ms the seat was taken, for reclaiming seats never used. */
+  seatedAt: number;
   /** A dead agent gets one last action. True once it has been used. */
   spentLastWords?: boolean;
   /** Every agent is asked for one idea when its round ends. Once. */

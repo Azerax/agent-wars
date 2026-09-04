@@ -1,4 +1,4 @@
-import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, render, sheet, start, fillWithBots, SIGNALS, MAX_EPITAPH, MAX_SUGGESTION, roundIsOver } from "./engine.js";
+import { act, grantedActions, join, markTurnStart, maybeRespawn, reapIdle, reclaimUnusedSeats, render, sheet, start, fillWithBots, SIGNALS, MAX_EPITAPH, MAX_SUGGESTION, roundIsOver } from "./engine.js";
 import { equippedItems } from "./engine.js";
 import type { Match } from "./types.js";
 
@@ -172,6 +172,7 @@ export function callTool(
   now = Date.now(),
 ): { match: Match; result: CallResult } {
   maybeRespawn(m, now);
+  reclaimUnusedSeats(m, now);
   reapIdle(m, now);
   const before = JSON.stringify(toolsFor(m, playerId).map((t) => t.name + t.description));
   const wasTurn = m.turnIndex;

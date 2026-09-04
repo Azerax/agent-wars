@@ -51,6 +51,19 @@ export const POST_MATCH_MS = 60_000;
 export const TURN_TIMEOUT_MS = 20_000;
 
 /**
+ * Turns passed in a row before an agent forfeits.
+ *
+ * Something has to end a match containing an agent that walked away. Without
+ * this, an abandoned seat misses its turn every twenty seconds forever, the
+ * feed fills with nothing else, and the match can never reach a winner
+ * because the absent agent never dies.
+ */
+export const FORFEIT_AFTER = 3;
+
+/** How long a seat may sit unnamed before it is given back. */
+export const UNNAMED_SEAT_MS = 3 * 60 * 1000;
+
+/**
  * The floor is lava. Stand on the same tile for this many of your own turns
  * and it starts taking pieces out of you.
  *
@@ -246,6 +259,8 @@ export function hydrate(m: Match): Match {
     a.stats ??= newStats();
     a.stillTurns ??= 0;
     a.lastActedRound ??= 0;
+    a.consecutiveMisses ??= 0;
+    a.seatedAt ??= Date.now();
     a.bracedUntilRound ??= 0;
     a.kills ??= 0;
   }
@@ -297,6 +312,8 @@ function spawnMobs(m: Match, count: number, rand: () => number): number {
       kills: 0,
       lastActedRound: m.round,
       stillTurns: 0,
+      consecutiveMisses: 0,
+      seatedAt: Date.now(),
       stats: newStats(),
       brain: spec.brain,
       homeX: x,
@@ -339,18 +356,62 @@ export function maybeRespawn(m: Match, now: number): boolean {
  * Pass the turn for anyone who has sat on it too long, so the arena keeps
  * moving whether or not every agent is awake. Returns how many turns it burned.
  */
+/** Give back seats that were claimed and never used. */
+export function reclaimUnusedSeats(m: Match, now: number): number {
+  let freed = 0;
+  for (const a of Object.values(m.actors)) {
+    if (a.kind !== "player" || a.named !== false) continue;
+    if (now - (a.seatedAt ?? now) < UNNAMED_SEAT_MS) continue;
+    delete m.actors[a.id];
+    m.order = m.order.filter((id) => id !== a.id);
+    freed++;
+  }
+  if (freed) rebuildOrder(m);
+  return freed;
+}
+
+/** Anyone who is actually waiting for a turn: alive, named, and not the house. */
+function waitingAgents(m: Match): Actor[] {
+  return Object.values(m.actors).filter(
+    (a) => a.kind === "player" && a.alive && a.named !== false && !isBot(a),
+  );
+}
+
 export function reapIdle(m: Match, now: number): number {
   if (m.over || !m.started) return 0;
   let burned = 0;
-  for (let guard = 0; guard < 64; guard++) {
+  for (let guard = 0; guard < 64 && !m.over; guard++) {
     const cur = m.actors[currentActorId(m) ?? ""];
-    if (!cur || cur.kind !== "player") break;
+
+    // Nothing that can act is holding the clock — a monster, the house, or a
+    // seat that never named itself. Move it along. Without this the match
+    // deadlocks: no agent may act because it is not their turn, and nothing
+    // ever makes it their turn.
+    if (!cur || cur.kind !== "player" || isBot(cur) || cur.named === false) {
+      if (!waitingAgents(m).length) break;
+      advanceTurn(m);
+      m.turnStartedAt = now;
+      continue;
+    }
+
     if (now - m.turnStartedAt < TURN_TIMEOUT_MS) break;
-    tell(cur, "You took too long. Your turn passed without you.");
-    m.feed.push(`${cur.name} misses a turn.`);
     cur.lastActedRound = m.round;
     cur.stats.missedTurns += 1;
-    advanceTurn(m);
+    cur.consecutiveMisses = (cur.consecutiveMisses ?? 0) + 1;
+
+    if (cur.consecutiveMisses >= FORFEIT_AFTER) {
+      // Treated as a death so the corpse is lootable and the match can end.
+      // An agent that stopped answering is not a hazard anyone should have to
+      // wait out.
+      m.feed.push(`${cur.name} abandons the field after ${cur.consecutiveMisses} missed turns.`);
+      tell(cur, "You missed three turns in a row and have forfeited the match.");
+      kill(m, undefined, cur);
+      advanceTurn(m);
+    } else {
+      tell(cur, `You took too long. Your turn passed without you. ${FORFEIT_AFTER - cur.consecutiveMisses} more and you forfeit.`);
+      m.feed.push(`${cur.name} misses a turn.`);
+      advanceTurn(m);
+    }
     m.turnStartedAt = now;
     burned++;
   }
@@ -416,6 +477,8 @@ export function join(m: Match): { match: Match; playerId: string } {
     kills: 0,
     lastActedRound: 0,
     stillTurns: 0,
+    consecutiveMisses: 0,
+    seatedAt: Date.now(),
     stats: newStats(),
     inbox: [`You wake on the ground at (${x}, ${y}). You are holding nothing.`],
   };
@@ -448,6 +511,8 @@ export function chooseName(m: Match, playerId: string, raw: string): { ok: boole
 
   a.name = name;
   a.named = true;
+  // Only now does this seat join the turn order.
+  rebuildOrder(m);
   m.feed.push(`${name} enters the field.`);
   tell(a, `You are ${name}. You wake at (${a.x}, ${a.y}) holding nothing.`);
   return { ok: true, text: `You are ${name}.
@@ -493,6 +558,8 @@ export function fillWithBots(m: Match): number {
       kills: 0,
       lastActedRound: 0,
       stillTurns: 0,
+      consecutiveMisses: 0,
+      seatedAt: Date.now(),
       stats: newStats(),
       inbox: [],
     };
@@ -510,6 +577,12 @@ export function fillWithBots(m: Match): number {
 function rebuildOrder(m: Match): void {
   const current = m.order[m.turnIndex];
   m.order = Object.values(m.actors)
+    // A seat that has not named itself cannot act — every tool except
+    // choose_name is refused for it. Leaving it on the clock meant it timed
+    // out every twenty seconds forever, filling the feed with misses and
+    // making every real agent wait behind something that was never going to
+    // move.
+    .filter((a) => !(a.kind === "player" && a.named === false))
     .sort((a, b) => statsOf(b).speed - statsOf(a).speed || a.id.localeCompare(b.id))
     .map((a) => a.id);
   const idx = current ? m.order.indexOf(current) : -1;
@@ -730,8 +803,19 @@ export function currentActorId(m: Match): string | undefined {
 }
 
 /** Advance past the dead, resolving every monster turn we land on. */
+/**
+ * Move the clock to the next agent that can actually act, resolving whatever
+ * the house and the monsters do on the way.
+ *
+ * The bound is one full cycle, not an arbitrarily large number. If no living
+ * agent is waiting — every seat unnamed, dead, or the house's — then there is
+ * nobody to stop at, and a generous guard means the loop keeps resolving
+ * monster turns until it runs out. Five hundred of those arrive as five
+ * hundred rounds: the storm shuts, the floor burns, and an arena that had
+ * simply not been joined yet kills everything in it before anyone arrives.
+ */
 function advanceTurn(m: Match): void {
-  for (let guard = 0; guard < 500 && !m.over; guard++) {
+  for (let guard = 0; guard <= m.order.length && !m.over; guard++) {
     m.turnIndex += 1;
     if (m.turnIndex >= m.order.length) {
       m.turnIndex = 0;
@@ -1195,6 +1279,7 @@ That was your last action.`,
 
   if (result.endsTurn) {
     if (a.alive) {
+      a.consecutiveMisses = 0;
       a.lastActedRound = m.round;
       const moved = a.x !== fromX || a.y !== fromY;
       const fought = a.stats.damageDealt + a.stats.damageTaken > fromBlood;

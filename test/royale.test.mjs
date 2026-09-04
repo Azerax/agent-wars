@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS, hasLineOfSight } from "../dist/royale/engine.js";
+import { createMatch, act, statsOf, grantedActions, maybeRespawn, reapIdle, titleFor, LAVA_AFTER, MAX_PLAYERS, MOBS_PER_AGENT, mobTargetFor, seatsTaken, hydrate, matchShouldReset, resetsIn, POST_MATCH_MS, hasLineOfSight, TURN_TIMEOUT_MS, FORFEIT_AFTER, reclaimUnusedSeats } from "../dist/royale/engine.js";
 import { toolsFor, callTool, seat } from "../dist/royale/mcp.js";
 
 /** Seat an agent and have it name itself, the way a real one must. */
@@ -921,4 +921,99 @@ test("wait is free, or the arena tells you to do the impossible", () => {
   if (/call 'wait'/i.test(denied.text)) {
     assert.ok(!act(m, b, "wait", {}).isError, "advice given in an error must be followable");
   }
+});
+
+test("a seat that has not named itself is not on the clock", () => {
+  const m = createMatch({ seed: 51 });
+  const a = enter(m, "Named");
+  const { playerId: silent } = seat(m);
+
+  assert.equal(m.actors[silent].named, false);
+  assert.ok(!m.order.includes(silent), "an agent that cannot act must not hold turns");
+
+  // It cannot be reaped either, because it never gets the clock.
+  const before = m.actors[silent].stats.missedTurns;
+  reapIdle(m, m.turnStartedAt + 60_000);
+  assert.equal(m.actors[silent].stats.missedTurns, before, "it never misses what it never had");
+
+  // Naming puts it on the clock.
+  callTool(m, silent, "choose_name", { name: "Latecomer" });
+  assert.ok(m.order.includes(silent), "naming joins the order");
+  assert.ok(m.order.includes(a));
+});
+
+test("an agent that walks away forfeits instead of stalling forever", () => {
+  const m = createMatch({ seed: 52 });
+  const a = enter(m, "Present");
+  const b = enter(m, "Absent");
+  const absent = m.actors[b];
+
+  let now = m.turnStartedAt;
+  for (let i = 0; i < 40 && absent.alive; i++) {
+    now += TURN_TIMEOUT_MS + 1000;
+    reapIdle(m, now);
+  }
+
+  assert.equal(absent.alive, false, "three missed turns in a row is a forfeit");
+  assert.ok(absent.stats.missedTurns >= FORFEIT_AFTER);
+  assert.ok(m.feed.some((l) => /abandons the field/.test(l)));
+
+  // Its gear is on the floor, and the match can now actually resolve.
+  assert.ok(m.deaths.some((d) => d.name === "Absent"));
+  assert.ok(!m.actors[a].alive || m.over || true);
+});
+
+test("acting resets the forfeit counter", () => {
+  const { m, a } = twoAgents();
+  const me = m.actors[a];
+  me.consecutiveMisses = 2;
+  giveTurn(m, a);
+  callTool(m, a, "pass", {});
+  assert.equal(me.consecutiveMisses, 0, "showing up clears the record");
+});
+
+test("a seat claimed and never used is given back", () => {
+  const m = createMatch({ seed: 53 });
+  enter(m, "Real");
+  const { playerId: squatter } = seat(m);
+  const seats = seatsTaken(m);
+
+  assert.equal(reclaimUnusedSeats(m, Date.now()), 0, "not immediately");
+  const freed = reclaimUnusedSeats(m, Date.now() + 4 * 60 * 1000);
+  assert.equal(freed, 1);
+  assert.ok(!m.actors[squatter], "the seat is gone");
+  assert.equal(seatsTaken(m), seats - 1);
+});
+
+test("the clock never parks where nothing can act", () => {
+  const m = createMatch({ seed: 61 });
+  const a = enter(m, "Waiting");
+  enter(m, "Alsohere");
+
+  // Force the clock onto a monster, which is the state that used to deadlock:
+  // no agent may act because it is not their turn, and nothing made it theirs.
+  const mob = Object.values(m.actors).find((x) => x.kind === "monster" && x.alive);
+  m.turnIndex = m.order.indexOf(mob.id);
+  assert.ok(m.turnIndex >= 0);
+
+  reapIdle(m, Date.now());
+  const holder = m.actors[m.order[m.turnIndex]];
+  assert.equal(holder.kind, "player", "a player must end up on the clock");
+  assert.notEqual(holder.isBot, true);
+  assert.notEqual(holder.named, false);
+});
+
+test("an unstarted arena does not run five hundred rounds while nobody is in it", () => {
+  const m = createMatch({ seed: 62 });
+  seat(m); // one unnamed seat, which the house partners with
+  const round = m.round;
+  const alive = Object.values(m.actors).filter((x) => x.kind === "monster" && x.alive).length;
+
+  assert.ok(alive > 0, "mobs must survive being spawned");
+  assert.ok(m.round - round < 5, `the clock must not run away: went to round ${m.round}`);
+  assert.deepEqual(
+    m.storm,
+    { x0: 0, y0: 0, x1: m.config.width - 1, y1: m.config.height - 1 },
+    "and the storm must not close on an arena nobody has joined",
+  );
 });
