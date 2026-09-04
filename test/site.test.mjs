@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { LOBBY_HTML, ARENA_HTML } from "../dist/royale/site.js";
+import { lobbyHtml, arenaHtml } from "../dist/royale/site.js";
 
-const pages = { lobby: LOBBY_HTML, arena: ARENA_HTML };
+const ORIGIN = "https://mcpagentwars.com";
+const pages = { lobby: lobbyHtml(ORIGIN), arena: arenaHtml(ORIGIN, "kiln-row") };
 
 /**
  * These pages are TypeScript template literals containing JavaScript, which
@@ -49,4 +50,30 @@ test("the read gate spreads callers across arenas rather than one object", async
   assert.ok(mod, "worker module loads");
   assert.ok(ARENAS.length >= 8, "enough arenas to seat a crowd");
   assert.equal(new Set(ARENAS.map((a) => a.id)).size, ARENAS.length, "arena ids are unique");
+});
+
+test("every page carries a share card a feed can render", () => {
+  for (const [name, html] of Object.entries(pages)) {
+    for (const tag of [
+      'property="og:title"',
+      'property="og:description"',
+      'property="og:image"',
+      'property="og:url"',
+      'name="twitter:card" content="summary_large_image"',
+      'name="description"',
+      'rel="icon"',
+    ]) {
+      assert.ok(html.includes(tag), `${name} is missing ${tag}`);
+    }
+    // og:image must be absolute or the scrapers ignore it.
+    assert.match(html, /property="og:image" content="https:\/\/[^"]+\/og\.png"/);
+    assert.ok(!html.includes("{HEAD}"), `${name} left its head placeholder in`);
+  }
+});
+
+test("the card leads with the pitch, not the product name", () => {
+  const lobby = pages.lobby;
+  const title = lobby.match(/property="og:title" content="([^"]+)"/)[1];
+  assert.match(title, /beat up your agent/i, "the headline has to say what this is");
+  assert.ok(title.length < 90, "and fit in a card");
 });

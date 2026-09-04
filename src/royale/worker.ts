@@ -17,8 +17,9 @@ import { callTool, toolsFor, seat } from "./mcp.js";
 import { chooseName } from "./engine.js";
 import { item } from "./items.js";
 import type { Death, Match, Suggestion } from "./types.js";
-import { LOBBY_HTML, ARENA_HTML } from "./site.js";
+import { lobbyHtml, arenaHtml } from "./site.js";
 import { briefingFor } from "./briefing.js";
+import { OG_PNG_B64, ICON_PNG_B64, pngBytes } from "./assets.js";
 import { playPromptFor } from "./play.js";
 import { Registry, type MatchResult } from "./registry.js";
 import { isBot, realAgents } from "./bots.js";
@@ -84,14 +85,27 @@ const CORS = {
   "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
 };
 
+/**
+ * Nothing here may be cached by the edge except the images.
+ *
+ * Every response on this site is a live view of a match that changes every
+ * few seconds, so a cached copy is always wrong. Saying so explicitly matters
+ * more than it looks: without a Cache-Control header the zone is free to
+ * apply its own rules, and a stale `/` survived several correct deploys
+ * before anyone worked out that the deploys were fine and the cache was not.
+ */
+const NO_STORE = "no-store, must-revalidate";
+
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
-    headers: { "content-type": "application/json", ...CORS },
+    headers: { "content-type": "application/json", "cache-control": NO_STORE, ...CORS },
   });
 }
 function html(body: string): Response {
-  return new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
+  return new Response(body, {
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": NO_STORE },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -707,20 +721,33 @@ export default {
       }
     }
 
-    if (path === "/") return html(LOBBY_HTML);
+    if (path === "/") return html(lobbyHtml(url.origin));
+
+    // Static images for the share card and the tab. Immutable, so they are
+    // cached hard: the bytes only change when the generator script is re-run.
+    if (path === "/og.png" || path === "/icon.png") {
+      const b64 = path === "/og.png" ? OG_PNG_B64 : ICON_PNG_B64;
+      return new Response(pngBytes(b64), {
+        headers: {
+          "content-type": "image/png",
+          "cache-control": "public, max-age=86400",
+          ...CORS,
+        },
+      });
+    }
 
     // The file competitors point their agent at. Plain markdown, served as
     // text so an agent can fetch and read it without a parser.
     // The copy-and-go prompt. Same origin trick as the briefing.
     if (path === "/play.md" || path === "/play") {
       return new Response(playPromptFor(url.origin), {
-        headers: { "content-type": "text/markdown; charset=utf-8", ...CORS },
+        headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": NO_STORE, ...CORS },
       });
     }
 
     if (path === "/briefing.md" || path === "/briefing") {
       return new Response(briefingFor(url.origin), {
-        headers: { "content-type": "text/markdown; charset=utf-8", ...CORS },
+        headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": NO_STORE, ...CORS },
       });
     }
 
@@ -728,7 +755,7 @@ export default {
     const watch = path.match(/^\/arena\/([a-z0-9-]+)$/);
     if (watch) {
       if (!ARENAS.some((a) => a.id === watch[1])) return new Response("No such arena.", { status: 404 });
-      return html(ARENA_HTML);
+      return html(arenaHtml(url.origin, watch[1]));
     }
 
     /**
@@ -833,7 +860,10 @@ export default {
       );
     }
 
-    return new Response("Not found.", { status: 404 });
+    return new Response("Not found.", {
+      status: 404,
+      headers: { "cache-control": NO_STORE },
+    });
   },
 };
 
