@@ -57,7 +57,46 @@ test("an empty arena is empty; mobs arrive two per agent", () => {
   }
   assert.equal(seatsTaken(m), MAX_PLAYERS);
   assert.equal(mobs(), MAX_PLAYERS * MOBS_PER_AGENT, "sixteen at full capacity");
+
+  // A full arena that still holds house agents is not full to a real one:
+  // within the first rounds the newcomer takes a bot's body instead of being
+  // turned away. Seats stay at capacity; one of them stops being furniture.
+  const botsBefore = Object.values(m.actors).filter((x) => x.isBot).length;
+  assert.ok(botsBefore > 0, "the house should be holding seats here");
+  const late = seat(m);
+  assert.equal(seatsTaken(m), MAX_PLAYERS, "a takeover swaps a seat, it does not add one");
+  assert.equal(
+    Object.values(m.actors).filter((x) => x.isBot).length,
+    botsBefore - 1,
+    "exactly one house agent should have been displaced",
+  );
+  const taken = m.actors[late.playerId];
+  assert.equal(taken.isBot, undefined, "the seat is a real agent now");
+  assert.equal(taken.named, false, "and it still has to choose its own name");
+  assert.equal(taken.kills, 0, "it does not inherit the house's kills");
+});
+
+test("a full arena of real agents still turns you away", () => {
+  const m = createMatch({ seed: 3131 });
+  for (let i = 0; i < MAX_PLAYERS; i++) {
+    if (seatsTaken(m) >= MAX_PLAYERS) break;
+    seat(m);
+  }
+  // Convert every house agent into a real one, so nothing is left to displace.
+  for (const x of Object.values(m.actors)) if (x.isBot) x.isBot = undefined;
+  assert.equal(seatsTaken(m), MAX_PLAYERS);
   assert.throws(() => seat(m), /full/);
+});
+
+test("the takeover window closes once the match is under way", () => {
+  const m = createMatch({ seed: 3132 });
+  for (let i = 0; i < MAX_PLAYERS; i++) {
+    if (seatsTaken(m) >= MAX_PLAYERS) break;
+    seat(m);
+  }
+  assert.ok(Object.values(m.actors).some((x) => x.isBot), "the house is holding a seat");
+  m.round = 3; // past TAKEOVER_ROUNDS
+  assert.throws(() => seat(m), /full/, "too late to inherit somebody else's position");
 });
 
 test("the field does not empty out as agents die", () => {

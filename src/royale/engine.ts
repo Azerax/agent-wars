@@ -71,6 +71,28 @@ export const TURN_TIMEOUT_MS = 30_000;
 export const FORFEIT_AFTER = 3;
 
 /**
+ * Rounds during which an arriving agent takes a house agent's body rather than
+ * a fresh seat.
+ *
+ * The arena's real scarcity is not seats, it is *simultaneity*. Everything a
+ * house agent does is published — botTurn is a priority list anyone can read —
+ * so a match against the house is a simulation of a system you could have
+ * derived from the repository without playing it. The only thing this arena
+ * can measure that source cannot tell you is what another agent does, and that
+ * requires two of them on the board at once.
+ *
+ * Before this, two agents arriving ninety seconds apart never met: the first
+ * was given bots to fight, the match started, and the second got a fresh seat
+ * in a fight already in progress. Now the second one displaces a bot instead.
+ * Real opponents replace furniture, and the furniture was never the point.
+ *
+ * Two rounds, because a takeover has to be early enough that the newcomer has
+ * not missed the match. Later than that and you are not joining a fight, you
+ * are inheriting someone else's losing position.
+ */
+export const TAKEOVER_ROUNDS = 2;
+
+/**
  * How long an agent must be silent before missed turns count as desertion.
  *
  * Missing turns and having left are not the same thing, and the forfeit rule
@@ -562,6 +584,11 @@ export function markTurnStart(m: Match, now: number): void {
  * before it can do anything else.
  */
 export function join(m: Match): { match: Match; playerId: string } {
+  // An arriving agent would rather fight somebody than something. If the match
+  // is young enough, take a house agent's body instead of adding a seat.
+  const takeover = takeOverBot(m);
+  if (takeover) return takeover;
+
   const seated = Object.values(m.actors).filter((a) => a.kind === "player").length;
   if (seated >= MAX_PLAYERS) throw new Error(`This arena is full (${MAX_PLAYERS} agents).`);
   const rand = rngFrom(m.config.seed + Object.keys(m.actors).length * 7919);
@@ -596,6 +623,68 @@ export function join(m: Match): { match: Match; playerId: string } {
   m.actors[playerId].named = false;
   rebuildOrder(m);
   topUpMobs(m, rngFrom(m.config.seed + m.mobSerial * 31 + seated));
+  return { match: m, playerId };
+}
+
+/**
+ * Put an arriving agent into a house agent's body, if the match is young.
+ *
+ * The newcomer inherits the situation and not the credit: position, health and
+ * whatever the bot had picked up, because that is the board as it stands and
+ * pretending otherwise would mean spawning someone into a wall. It does not
+ * inherit the bot's kills or stats — those were the house's, and a record that
+ * counts them is a record that lies about who did the fighting.
+ *
+ * The seat arrives unnamed, so the newcomer still chooses its own name through
+ * its own first tool call. That rule has no exceptions and this is not one.
+ *
+ * Returns undefined when there is nothing to take over, and the caller falls
+ * back to an ordinary seat.
+ */
+function takeOverBot(m: Match): { match: Match; playerId: string } | undefined {
+  if (m.over) return undefined;
+  if (m.round > TAKEOVER_ROUNDS) return undefined;
+
+  // Only when there is no seat to be had. A free seat is strictly better than
+  // a takeover — it adds a combatant instead of swapping one, and the arena
+  // stocks mobs per seat, so displacing a bot while space remains would
+  // quietly thin the field. This fires exactly when the house would otherwise
+  // have locked a real agent out of a match it could still join.
+  if (Object.values(m.actors).filter((a) => a.kind === "player").length < MAX_PLAYERS) {
+    return undefined;
+  }
+
+  // Never the positive control: it is instrumentation, and a live agent
+  // standing in for it would quietly disable the forfeit self-check.
+  const victim = Object.values(m.actors).find((a) => a.alive && isActiveBot(a));
+  if (!victim) return undefined;
+
+  const seated = Object.values(m.actors).filter((a) => a.kind === "player").length;
+  const rand = rngFrom(m.config.seed + Object.keys(m.actors).length * 7919);
+  const playerId = `p_${seated + 1}_${Math.floor(rand() * 1e6)}`;
+
+  const now = Date.now();
+  m.actors[playerId] = {
+    ...victim,
+    id: playerId,
+    name: `nameless ${seated + 1}`,
+    named: false,
+    isBot: undefined,
+    isControl: undefined,
+    kills: 0,
+    stats: newStats(),
+    consecutiveMisses: 0,
+    lastActedRound: m.round,
+    seatedAt: now,
+    lastSeenAt: now,
+    inbox: [
+      `You wake at (${victim.x}, ${victim.y}) on ${victim.hp} HP, standing where a house ` +
+        `agent was a moment ago. What it was carrying, you are carrying.`,
+    ],
+  };
+  delete m.actors[victim.id];
+  m.feed.push(`${victim.name} is pulled from the field. Something real is wearing it now.`);
+  rebuildOrder(m);
   return { match: m, playerId };
 }
 
