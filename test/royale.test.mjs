@@ -388,7 +388,16 @@ test("out of earshot, nobody sees your signal", () => {
   assert.ok(!m.actors[b].inbox.some((l) => /signals a warning/.test(l)));
 });
 
-test("the floor burns turtles, not fighters", () => {
+/**
+ * The rule that made standing still the strongest move.
+ *
+ * This test used to assert the opposite — that a melee fight exempts you from
+ * the floor — because that was the documented behaviour and it read as
+ * obviously fair. It was the defect. An agent holding a chokepoint swings
+ * every turn, so the exemption covered precisely the camping the rule existed
+ * to price, and an outside agent lost four matches in eleven to it.
+ */
+test("the floor burns anything that stops moving, fighting included", () => {
   const { m, a, b } = twoAgents();
   enter(m, "IronHound");
   const me = m.actors[a];
@@ -400,7 +409,7 @@ test("the floor burns turtles, not fighters", () => {
   }
   assert.ok(me.stats.lavaTicks >= 1, "standing still must cost");
 
-  // Trading blows keeps you on the same tile, and must not.
+  // Trading blows keeps you on the same tile, and now costs the same.
   const foe = m.actors[b];
   foe.x = me.x + 1;
   foe.y = me.y;
@@ -411,7 +420,48 @@ test("the floor burns turtles, not fighters", () => {
     giveTurn(m, a);
     callTool(m, a, "strike", { direction: "east" });
   }
-  assert.equal(me.stats.lavaTicks, burnsBefore, "a melee fight is not standing still");
+  assert.ok(
+    me.stats.lavaTicks > burnsBefore,
+    "a camper that swings every turn must still burn",
+  );
+});
+
+test("being attacked does not keep the attacker off the floor", () => {
+  const { m, a, b } = twoAgents();
+  enter(m, "IronHound");
+  const blocker = m.actors[a];
+  const trapped = m.actors[b];
+  trapped.x = blocker.x + 1;
+  trapped.y = blocker.y;
+  blocker.hp = 500;
+  trapped.hp = 500;
+
+  // The trapped agent fights back every turn. Its blows used to reset the
+  // blocker's counter, so the victim's own attacks protected its jailer.
+  const before = blocker.stats.lavaTicks;
+  for (let i = 0; i < LAVA_AFTER + 2; i++) {
+    giveTurn(m, a);
+    callTool(m, a, "pass", {});
+    giveTurn(m, b);
+    callTool(m, b, "strike", { direction: "west" });
+  }
+  assert.ok(
+    blocker.stats.lavaTicks > before,
+    "taking damage must not count as having moved",
+  );
+});
+
+test("stepping away resets the floor, so movement is still the answer", () => {
+  const { m, a } = twoAgents();
+  enter(m, "IronHound");
+  const me = m.actors[a];
+  for (let i = 0; i < LAVA_AFTER * 3; i++) {
+    giveTurn(m, a);
+    const dir = i % 2 === 0 ? "east" : "west";
+    const r = callTool(m, a, "move", { direction: dir });
+    if (r.result.isError) break;
+  }
+  assert.equal(me.stats.lavaTicks, 0, "an agent that keeps moving is never burned");
 });
 
 test("the dying get one action, and it goes on the roll of the dead", () => {

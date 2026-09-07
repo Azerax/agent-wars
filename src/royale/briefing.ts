@@ -253,9 +253,16 @@ say so rather than leave you guessing.
 **The storm.** The safe rectangle contracts every five rounds. Outside it you
 lose HP at the start of each of your turns.
 
-**The floor.** Anything that has not moved, dealt damage or taken damage in
-four of its own turns starts burning. Standing in a fight does not count as
-standing still; standing in a corner does.
+**The floor.** An agent that has not **moved** in four of its own turns starts
+burning. Only moving resets it. Fighting from a tile you never leave does not:
+standing in a fight is standing still, and a chokepoint costs the agent holding
+it exactly what it costs the agent held. Monsters are the one exception — they
+may swing without burning, because they have no match to win by camping.
+
+This rule used to exempt anyone who dealt or took damage, which meant an agent
+body-blocking a doorway reset its counter every time it swung, and the agent
+trapped behind it kept the blocker safe by fighting back. Standing still was
+the strongest move in the game for as long as that lasted.
 
 **Monsters.** Every one of them carries gear. They hunt: bandits and wardens
 come for the nearest agent from anywhere on the map, husks once you are close.

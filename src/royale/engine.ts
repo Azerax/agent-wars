@@ -1155,10 +1155,26 @@ function stormTick(m: Match, a: Actor): void {
  * Charge an actor for doing nothing. Applies to everything on the field, not
  * just agents — a world rule with an exception is a rule nobody trusts.
  *
- * "Busy" means moved, or gave or took damage. Melee requires standing next to
- * something, so counting a toe-to-toe fight as standing still would burn both
- * fighters to death mid-swing: the rule is meant to punish turtling, not
- * combat. Bracing in a corner is still turtling and still costs.
+ * For an agent, "busy" means moved. Nothing else.
+ *
+ * It used to mean moved, or gave or took damage, on the reasoning that melee
+ * requires standing next to something and a toe-to-toe fight is not turtling.
+ * That reasoning was wrong, and it was wrong in the precise way that mattered:
+ * an agent holding a chokepoint swings every turn, so its counter reset every
+ * turn, and the one rule written to make camping expensive exempted the only
+ * camping strategy that wins. Taking damage counted too, which meant the
+ * trapped agent's own attacks were what kept its jailer safe from the floor.
+ *
+ * An outside agent lost four matches in eleven to exactly this before anyone
+ * noticed, and the briefing described the broken behaviour accurately the
+ * whole time — this was never code drifting from its documentation. The
+ * documented rule was the defect.
+ *
+ * So melee now costs ground: stand and trade blows for four turns and the
+ * floor starts charging you, the same as bracing in a corner. Monsters keep
+ * the old exemption while attacking, deliberately. They have no win condition
+ * to camp for, and a guard that must pace its post or burn is a mob standing
+ * still and dying for no reason anybody watching would enjoy.
  */
 function applyLava(m: Match, a: Actor, busy: boolean): void {
   // Same rule as the storm: the hazards belong to a running match. An agent
@@ -1321,20 +1337,13 @@ function botTurn(m: Match, a: Actor): void {
 
   const rand = rngFrom(m.config.seed + m.round * 977 + a.x * 31 + a.y);
   const from = { x: a.x, y: a.y };
-  const blood = a.stats.damageDealt + a.stats.damageTaken;
 
   /**
-   * Close the turn with the same "busy" test players get: moved, or gave or
-   * took a blow. Hardcoding `false` here burned bots alive for the crime of
-   * standing next to something and hitting it, which is exactly the mistake
-   * the player path had already been fixed for.
+   * Close the turn with the same test players get, which is now movement and
+   * nothing else. The house plays under the rules it enforces, so a bot that
+   * parks on a tile and swings burns exactly like an agent that does.
    */
-  const done = () =>
-    applyLava(
-      m,
-      a,
-      a.x !== from.x || a.y !== from.y || a.stats.damageDealt + a.stats.damageTaken > blood,
-    );
+  const done = () => applyLava(m, a, a.x !== from.x || a.y !== from.y);
   const verbs = new Set(grantedActions(a));
   const enemies = Object.values(m.actors).filter((t) => t.alive && t.id !== a.id);
 
@@ -1355,6 +1364,22 @@ function botTurn(m: Match, a: Actor): void {
   if (kit && a.hp < st.maxHp * 0.4 && (a.charges[kit.id] ?? 0) > 0) {
     resolve(m, a, "mend", {});
     return done();
+  }
+
+  /**
+   * 2b. The floor is about to charge for this tile.
+   *
+   * Since melee stopped resetting the still-counter, a bot that stands and
+   * trades blows burns down where it stands. Stepping away one turn before the
+   * threshold keeps the fight going without paying for the ground, which is
+   * the behaviour the rule is supposed to teach — the house should be seen
+   * obeying it, not dying to it.
+   */
+  if (m.started && a.stillTurns >= LAVA_AFTER - 1) {
+    for (const [, [dx, dy]] of Object.entries(DIRS)) {
+      if (actorAt(m, a.x + dx, a.y + dy)) continue;
+      if (step(m, a, dx, dy)) return done();
+    }
   }
 
   // 3. Something in reach. Prefer the widest swing available.
@@ -1574,7 +1599,6 @@ That was your last action.`,
 
   const fromX = a.x;
   const fromY = a.y;
-  const fromBlood = a.stats.damageDealt + a.stats.damageTaken;
   const result = resolve(m, a, action, args, now);
   if (result.isError) return result;
 
@@ -1582,9 +1606,9 @@ That was your last action.`,
     if (a.alive) {
       a.consecutiveMisses = 0;
       a.lastActedRound = m.round;
-      const moved = a.x !== fromX || a.y !== fromY;
-      const fought = a.stats.damageDealt + a.stats.damageTaken > fromBlood;
-      applyLava(m, a, moved || fought);
+      // Movement, and only movement. Fighting from a tile you never leave is
+      // the camping this rule exists to price, not an excuse from it.
+      applyLava(m, a, a.x !== fromX || a.y !== fromY);
     }
     if (!m.over) advanceTurn(m);
   }
