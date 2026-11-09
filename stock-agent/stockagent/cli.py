@@ -161,26 +161,44 @@ def cmd_serve(args) -> int:
 
 
 def cmd_doctor(args) -> int:
+    from .config import find_alphavantage_key
     from .data.http import HttpClient
     from .data.provider import LiveMarketData, check_sources
     from .llm import CatalystLLM
 
     cfg = load_config(args.config)
-    http = HttpClient(None, cfg.data.user_agent, timeout=10.0, min_interval=0.2, retries=1)
+    http = HttpClient(cfg.data.cache_path, cfg.data.user_agent, timeout=10.0, min_interval=0.2, retries=1)
     md = LiveMarketData(cfg, http)
+    _key, where = find_alphavantage_key("", cfg.data.alphavantage_key_file)
+    found = where if cfg.data.alphavantage_api_key else "not found (set ALPHA, or put ALPHA=yourkey in .alpha)"
+    print(f"alpha vantage key: {found}")
     print("data sources:", flush=True)
 
-    def show(name: str, ok: bool, detail: str) -> None:
-        print(f"  {'OK  ' if ok else 'FAIL'} {name:<28} {detail}", flush=True)
+    def show(name: str, role: str, ok: bool, detail: str) -> None:
+        print(f"  {'OK  ' if ok else 'FAIL'} {role:<9}{name:<24} {detail}", flush=True)
 
-    ok_count = sum(ok for _, ok, _ in check_sources(md, show))
+    results = check_sources(md, show)
+    ok_by_role: dict[str, list[str]] = {}
+    for name, role, ok, _ in results:
+        if ok:
+            ok_by_role.setdefault(role, []).append(name)
     llm = CatalystLLM(cfg.llm)
     print(f"claude catalyst grader: {'enabled' if llm.enabled else 'off (' + str(llm.disabled_reason) + ')'}")
     if not cfg.data.sec_user_agent:
         print("note: SEC filings need STOCKAGENT_SEC_USER_AGENT='Your Name you@example.com'")
     now = mcal.Clock().now()
     print(f"market: {mcal.market_phase(now)} ({now:%Y-%m-%d %H:%M} ET)")
-    return 0 if ok_count else 2
+    prices = ok_by_role.get("prices", [])
+    has_history = any(n in prices for n in ("yahoo chart", "nasdaq daily history", "stooq daily"))
+    has_quotes = any(n in prices for n in ("yahoo chart", "yahoo quote (bid/ask)", "nasdaq quote"))
+    print()
+    if has_history and has_quotes and ok_by_role.get("universe"):
+        print(f"READY: prices via {', '.join(prices)}; tips from {len(ok_by_role.get('tips', []))} sources")
+        if "yahoo quote (bid/ask)" not in prices and "yahoo chart" not in prices:
+            print("       without Yahoo, opening prices may be missing, so gap setups fire less often")
+        return 0
+    print("NOT READY: the agent needs daily history, live quotes and the Nasdaq universe to trade")
+    return 2
 
 
 def cmd_order(args) -> int:

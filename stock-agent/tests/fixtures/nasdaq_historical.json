@@ -1,0 +1,7 @@
+{"data":{"symbol":"ABCD","totalRecords":4,"tradesTable":{"asOf":null,"headers":{"date":"Date","close":"Close/Last","volume":"Volume","open":"Open","high":"High","low":"Low"},
+"rows":[
+{"date":"11/06/2026","close":"$2.31","volume":"5,400,000","open":"$2.12","high":"$2.40","low":"$2.05"},
+{"date":"11/05/2026","close":"$2.10","volume":"1,500,000","open":"$2.05","high":"$2.20","low":"$2.00"},
+{"date":"11/04/2026","close":"$2.05","volume":"N/A","open":"N/A","high":"N/A","low":"N/A"},
+{"date":"bad","close":"$9.99","volume":"1","open":"$1","high":"$1","low":"$1"}
+]}},"message":null,"status":{"rCode":200,"bCodeMessage":null,"developerMessage":null}}

@@ -1,0 +1,3 @@
+{"data":{"symbol":"ABCD","companyName":"Abcd Therapeutics Inc. Common Stock","stockType":"Common Stock","exchange":"NASDAQ-CM","isNasdaqListed":true,
+"primaryData":{"lastSalePrice":"$2.31","netChange":"+0.21","percentageChange":"+10.00%","deltaIndicator":"up","lastTradeTimestamp":"Nov 9, 2026 12:37 PM ET","isRealTime":true,"bidPrice":"$2.30","askPrice":"$2.32","bidSize":"1,200","askSize":"3,000","volume":"5,400,000"},
+"secondaryData":null,"marketStatus":"Open","assetClass":"STOCKS","keyStats":{"dayrange":{"label":"High/Low:","value":"2.05 - 2.40"}}},"message":null,"status":{"rCode":200}}

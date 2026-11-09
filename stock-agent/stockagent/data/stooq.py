@@ -11,7 +11,10 @@ URL = "https://stooq.com/q/d/l/"
 
 
 def parse_csv(text: str) -> pd.DataFrame:
-    if not text or not text.lstrip().lower().startswith("date"):
+    head = (text or "").lstrip().lower()
+    if head.startswith("<"):
+        raise DataError("stooq returned a web page instead of CSV (it now gates downloads); skipped")
+    if not head.startswith("date"):
         raise DataError(f"stooq: unexpected response {text[:80]!r}")
     df = pd.read_csv(io.StringIO(text))
     df.columns = [c.strip().lower() for c in df.columns]

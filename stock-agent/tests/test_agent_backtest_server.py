@@ -220,3 +220,26 @@ def test_llm_refusal_falls_back():
     llm = CatalystLLM(LLMConfig(enabled="on"))
     llm._client, _ = _fake_client(stop_reason="refusal")
     assert llm.grade("ABCD", [], [], MON) is None
+
+
+def test_stop_hit_between_polls_seen_from_new_session_low(cfg, db, market):
+    """Without minute bars, a new day low since the last poll still triggers the stop."""
+    cfg.agent.strategies = ["momentum_breakout"]
+    clk = mcal.SimClock(at(MON, 8, 0))
+    broker = SimBroker(db, cfg, clk)
+    broker.open_account(100.0)
+    agent = TradingAgent(cfg, db, market, broker, clk)
+    agent.tick()
+    clk.set(at(MON, 10, 0))
+    market.live["ABCD"] = quote(2.35, day_low=2.30)
+    agent.tick()
+    trade = broker.open_trades()[0]
+    assert trade["initial_stop"] < 2.30
+    clk.set(at(MON, 10, 1))
+    agent.tick()  # records the session range with the position held
+    clk.set(at(MON, 10, 2))
+    # Price dipped through the stop and recovered before this poll.
+    market.live["ABCD"] = quote(2.34, day_low=trade["initial_stop"] - 0.05)
+    agent.tick()
+    t = broker.trade(trade["id"])
+    assert t["status"] == "closed" and t["exit_reason"] == "stop_loss"

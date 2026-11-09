@@ -6,3 +6,8 @@ __pycache__/
 *.egg-info/
 config.toml
 backtest*.json
+# API keys: never commit these
+.alpha
+.alpha.txt
+.env
+*.key

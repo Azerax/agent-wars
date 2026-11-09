@@ -55,6 +55,7 @@ class TradingAgent:
         self.candidates: list[dict[str, Any]] = []
         self._history: dict[str, tuple[date, pd.DataFrame]] = {}
         self._last_poll: dict[str, datetime] = {}
+        self._last_range: dict[str, tuple[float | None, float | None, date]] = {}
         self._last_scout: datetime | None = None
         self._last_equity_snapshot: datetime | None = None
 
@@ -171,9 +172,18 @@ class TradingAgent:
         hit between polls is not missed."""
         since = self._last_poll.get(q.symbol)
         self._last_poll[q.symbol] = self.clock.now()
+        prev = self._last_range.get(q.symbol)
+        self._last_range[q.symbol] = (q.day_low, q.day_high, self.clock.now().date())
         try:
             bars = self.md.intraday_bars(q.symbol, "1m")
         except (DataError, NotImplementedError):
+            # No minute bars (Yahoo blocked): a new session low or high since the
+            # previous poll must have traded between the two polls.
+            if prev and prev[2] == self.clock.now().date():
+                if q.day_low is not None and prev[0] is not None and q.day_low < prev[0]:
+                    q.low = min(q.day_low, q.last)
+                if q.day_high is not None and prev[1] is not None and q.day_high > prev[1]:
+                    q.high = max(q.day_high, q.last)
             return
         if since is not None:
             bars = bars[bars.index > since - timedelta(minutes=1)]

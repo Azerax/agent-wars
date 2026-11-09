@@ -7,6 +7,7 @@ config.example.toml) or from environment variables for the secrets.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
@@ -145,20 +146,27 @@ class LLMConfig:
 class DataConfig:
     db_path: str = "data/stockagent.db"
     cache_path: str = "data/http_cache.db"
-    user_agent: str = (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0 Safari/537.36"
-    )
+    # Identify the client honestly. A site that refuses automated clients is
+    # treated as unavailable, not worked around.
+    user_agent: str = "stockagent/0.1 (paper-trading research; read-only)"
     # SEC asks automated clients to identify themselves with a contact address.
     # Set STOCKAGENT_SEC_USER_AGENT="Your Name you@example.com"; SEC sources are
     # skipped when it is empty.
     sec_user_agent: str = ""
     request_timeout: float = 15.0
     min_request_interval: float = 0.35
+    # Alpha Vantage. The key is read from the ALPHA or ALPHAVANTAGE_API_KEY
+    # environment variable, or from a `.alpha` file (ALPHA=yourkey) in the
+    # working directory or the project folder. Keep it out of config.toml.
+    alphavantage_api_key: str = ""
+    alphavantage_key_file: str = ".alpha"
+    alphavantage_daily_limit: int = 25  # free key: 25 requests/day
+    alphavantage_per_minute: int = 5
     sources: list[str] = field(
         default_factory=lambda: [
             "yahoo_screeners",
             "nasdaq_movers",
+            "alphavantage",
             "stocktwits",
             "reddit",
             "sec_filings",
@@ -222,6 +230,63 @@ def _merge(obj: Any, data: dict[str, Any]) -> None:
             setattr(obj, key, value)
 
 
+KEY_NAMES = ("ALPHA", "ALPHAVANTAGE_API_KEY", "ALPHA_VANTAGE_API_KEY")
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+
+
+def _read_text_any(path: Path) -> str:
+    raw = path.read_bytes()
+    for enc in ("utf-8-sig", "utf-16"):
+        try:
+            text = raw.decode(enc)
+            if "\x00" not in text:
+                return text
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1")
+
+
+def parse_key_file(text: str) -> str | None:
+    """Accepts `ALPHA=key`, `$env:ALPHA = "key"`, `set ALPHA=key`,
+    `export ALPHA=key`, or just the key on its own line."""
+    bare = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            name, value = line.split("=", 1)
+            name = re.sub(r"^(\$env:|export\s+|set\s+)", "", name.strip(), flags=re.I).strip()
+            if name.upper() in KEY_NAMES:
+                value = value.strip().strip("'\"").strip()
+                if value:
+                    return value
+        elif bare is None and re.fullmatch(r"[A-Za-z0-9]{8,64}", line):
+            bare = line
+    return bare
+
+
+def find_alphavantage_key(cfg_key: str = "", key_file: str = ".alpha") -> tuple[str, str]:
+    """Return (key, where it came from). Never log the key itself."""
+    for name in KEY_NAMES:
+        if os.environ.get(name, "").strip():
+            return os.environ[name].strip(), f"environment variable {name}"
+    candidates = []
+    for base in (Path.cwd(), PROJECT_DIR):
+        for name in (key_file, key_file + ".txt"):
+            p = base / name
+            if p not in candidates:
+                candidates.append(p)
+    for p in candidates:
+        if p.is_file():
+            key = parse_key_file(_read_text_any(p))
+            if key:
+                return key, f"file {p}"
+    if cfg_key:
+        return cfg_key, "config file"
+    return "", "not found"
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     cfg = Config()
     if path is None:
@@ -245,6 +310,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     sec_ua = os.environ.get("STOCKAGENT_SEC_USER_AGENT")
     if sec_ua:
         cfg.data.sec_user_agent = sec_ua
+    key, _where = find_alphavantage_key(cfg.data.alphavantage_api_key, cfg.data.alphavantage_key_file)
+    cfg.data.alphavantage_api_key = key
     db = os.environ.get("STOCKAGENT_DB")
     if db:
         cfg.data.db_path = db

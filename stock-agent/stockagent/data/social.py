@@ -13,6 +13,9 @@ from .http import HttpClient
 STOCKTWITS_TRENDING = "https://api.stocktwits.com/api/2/trending/symbols.json"
 STOCKTWITS_STREAM = "https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
 REDDIT_HOT = "https://www.reddit.com/r/{sub}/hot.json"
+REDDIT_RSS = "https://www.reddit.com/r/{sub}/hot/.rss"
+REDDIT_UA = "stockagent-paper-trader/0.1 (read-only research)"
+ATOM = "{http://www.w3.org/2005/Atom}"
 
 # Upper-case words that show up in posts and are not tickers worth chasing.
 STOPWORDS = {
@@ -99,6 +102,33 @@ def parse_reddit_listing(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return posts
 
 
+def parse_reddit_rss(xml_text: str) -> list[dict[str, Any]]:
+    """Reddit's Atom feed: no scores or comment counts, but rarely blocked."""
+    import html as _html
+    import xml.etree.ElementTree as ET_XML
+
+    from .http import DataError
+
+    try:
+        root = ET_XML.fromstring(xml_text)
+    except ET_XML.ParseError as exc:
+        raise DataError(f"reddit rss: bad XML ({exc})") from exc
+    posts = []
+    for e in root.findall(f"{ATOM}entry"):
+        link = e.find(f"{ATOM}link")
+        body = re.sub(r"<[^>]+>", " ", _html.unescape(e.findtext(f"{ATOM}content") or ""))
+        updated = e.findtext(f"{ATOM}updated") or e.findtext(f"{ATOM}published")
+        try:
+            created = datetime.fromisoformat(updated) if updated else None
+        except ValueError:
+            created = None
+        posts.append({
+            "title": (e.findtext(f"{ATOM}title") or "").strip(), "text": body[:2000], "score": 0, "comments": 0,
+            "flair": None, "url": link.get("href") if link is not None else None, "created": created,
+        })
+    return posts
+
+
 def rank_reddit_mentions(posts: Iterable[dict[str, Any]], universe: set[str]) -> list[dict[str, Any]]:
     agg: dict[str, dict[str, Any]] = {}
     for p in posts:
@@ -124,10 +154,17 @@ class Social:
         return parse_stocktwits_stream(self.http.get_json(STOCKTWITS_STREAM.format(symbol=symbol), ttl=600))
 
     def reddit_hot(self, sub: str, limit: int = 75) -> list[dict[str, Any]]:
-        payload = self.http.get_json(
-            REDDIT_HOT.format(sub=sub),
-            params={"limit": limit},
-            headers={"User-Agent": "stockagent-paper-trader/0.1 (research; read-only)"},
-            ttl=600,
-        )
-        return parse_reddit_listing(payload)
+        from .http import DataError
+
+        headers = {"User-Agent": REDDIT_UA}
+        try:
+            return parse_reddit_listing(
+                self.http.get_json(REDDIT_HOT.format(sub=sub), params={"limit": limit}, headers=headers, ttl=600)
+            )
+        except DataError as json_err:
+            try:
+                return parse_reddit_rss(
+                    self.http.get_text(REDDIT_RSS.format(sub=sub), params={"limit": limit}, headers=headers, ttl=600)
+                )
+            except DataError as rss_err:
+                raise DataError(f"reddit json: {json_err}; rss: {rss_err}") from rss_err
