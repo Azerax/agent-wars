@@ -320,9 +320,10 @@ def check_sources(md: LiveMarketData, on_result=None) -> list[tuple[str, str, bo
     probes = [
         ("yahoo chart", "prices", lambda: f"{len(md.yahoo.chart('SPY', '5d', '1d', ttl=0)[0])} bars"),
         ("yahoo quote (bid/ask)", "prices", lambda: f"{len(md.yahoo.quotes(['SPY'], ttl=0))} quotes"),
+        # Nasdaq's quote API is asked for assetclass=stocks, so probe a stock, not an ETF.
         ("nasdaq daily history", "prices",
-         lambda: f"{len(md.nasdaq.historical('SPY', today - timedelta(days=20), today, ttl=0))} bars"),
-        ("nasdaq quote", "prices", lambda: f"last {md.nasdaq.info('SPY', ttl=0)['last']}"),
+         lambda: f"{len(md.nasdaq.historical('AAPL', today - timedelta(days=20), today, ttl=0))} bars"),
+        ("nasdaq quote", "prices", lambda: f"last {md.nasdaq.info('AAPL', ttl=0)['last']}"),
         ("stooq daily", "prices", lambda: f"{len(md.stooq.daily('SPY', ttl=0))} bars"),
         ("nasdaq screener", "universe", lambda: f"{len(md.nasdaq.screener(['nasdaq'], ttl=0))} stocks"),
         ("yahoo screeners", "tips", lambda: f"{len(md.yahoo.screener('day_gainers', 25, ttl=0))} rows"),
