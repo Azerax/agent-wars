@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stockagent"
+version = "0.1.0"
+description = "Autonomous low-priced-stock paper-trading agent with a simulated US cash-account broker."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["requests>=2.31", "pandas>=2.1", "numpy>=1.26"]
+
+[project.optional-dependencies]
+llm = ["anthropic>=0.90"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+stockagent = "stockagent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["stockagent*"]
+
+[tool.setuptools.package-data]
+stockagent = ["web/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 130

@@ -1,0 +1,4 @@
+{"chart":{"result":[{"meta":{"currency":"USD","symbol":"ABCD","exchangeName":"NCM","fullExchangeName":"NasdaqCM","instrumentType":"EQUITY","regularMarketPrice":2.31,"regularMarketTime":1762547400,"regularMarketDayHigh":2.4,"regularMarketDayLow":2.05,"regularMarketVolume":5400000,"chartPreviousClose":2.1},
+"timestamp":[1762180200,1762266600,1762353000,1762439400],
+"events":{"splits":{"1759152600":{"date":1759152600,"numerator":1.0,"denominator":10.0,"splitRatio":"1:10"}}},
+"indicators":{"quote":[{"open":[2.0,2.05,null,2.12],"high":[2.1,2.2,null,2.4],"low":[1.95,2.0,null,2.05],"close":[2.05,2.1,null,2.31],"volume":[1200000,1500000,null,5400000]}],"adjclose":[{"adjclose":[2.05,2.1,null,2.31]}]}}],"error":null}}

@@ -1,0 +1,6 @@
+{"data":{"asof":null,"headers":{"symbol":"Symbol","name":"Name","lastsale":"Last Sale","netchange":"Net Change","pctchange":"% Change","marketCap":"Market Cap"},
+"rows":[
+{"symbol":"ABCD","name":"Abcd Therapeutics Inc. Common Stock","lastsale":"$2.31","netchange":"0.21","pctchange":"10.0%","volume":"5400000","marketCap":"45,045,000.00","country":"United States","ipoyear":"2019","industry":"Biotechnology","sector":"Health Care","url":"/market-activity/stocks/abcd"},
+{"symbol":"EFGH","name":"Efgh Corp Class A","lastsale":"$0.87","netchange":"-0.03","pctchange":"-3.333%","volume":"800,000","marketCap":"","country":"United States","ipoyear":"","industry":"","sector":"","url":""},
+{"symbol":"ABCDW","name":"Abcd Therapeutics Warrant","lastsale":"$0.05","netchange":"0.01","pctchange":"25%","volume":"300000","marketCap":"NA","country":"","ipoyear":"","industry":"","sector":"","url":""}
+]},"message":null,"status":{"rCode":200,"bCodeMessage":null,"developerMessage":null}}

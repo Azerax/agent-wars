@@ -1,0 +1,55 @@
+# Copy to config.toml (or point STOCKAGENT_CONFIG at it). Every key is optional;
+# anything left out keeps the default documented in stockagent/config.py.
+
+[risk]
+starting_cash = 100.0
+max_positions = 2
+risk_per_trade_pct = 0.08      # equity lost if a stop is hit; never raised to "catch up"
+max_position_pct = 0.65
+daily_loss_limit_pct = 0.15    # no new entries after losing this much in a day
+max_drawdown_halt_pct = 0.50   # no new entries once this far below peak equity
+max_cost_to_reward = 0.25      # skip trades whose fees + spread eat >25% of the target gain
+allow_unsettled_buys = false   # cash account: spend only settled cash (T+1)
+max_hold_days = 4
+
+[target]
+multiple = 2.0
+period_trading_days = 4
+
+[universe]
+min_price = 0.50
+max_price = 5.00
+min_avg_dollar_volume = 1000000
+min_volume = 100000
+
+[fees]
+preset = "zero_commission"     # zero_commission | ibkr_pro_fixed | flat_4_95
+sec_fee_per_million = 20.60    # SEC Section 31, sells, from 2026-04-04
+finra_taf_per_share = 0.000195 # FINRA TAF, sells, 2026
+finra_taf_max = 9.79
+cat_fee_per_share = 0.0        # set if your broker passes CAT fees through
+
+[execution]
+base_spread_pct = 0.001
+liquidity_spread_coef = 0.01
+market_slippage_pct = 0.002
+max_chase_pct = 0.015
+
+[agent]
+poll_seconds = 60
+scout_interval_minutes = 30
+watchlist_size = 25
+strategies = ["momentum_breakout", "squeeze_breakout", "gap_and_go", "oversold_bounce",
+              "catalyst_momentum", "social_momentum"]
+adaptive = true
+
+[llm]
+enabled = "auto"               # auto: on when Anthropic credentials are present
+model = "claude-opus-5-5"
+effort = "low"
+max_calls_per_day = 40
+
+[data]
+db_path = "data/stockagent.db"
+sources = ["yahoo_screeners", "nasdaq_movers", "stocktwits", "reddit", "sec_filings", "news"]
+reddit_subs = ["pennystocks", "smallstreetbets", "RobinHoodPennyStocks"]

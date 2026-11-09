@@ -1,0 +1,6 @@
+{"response":{"status":200},"symbol":{"symbol":"ABCD"},"messages":[
+{"id":1,"body":"$ABCD to the moon","created_at":"2026-11-05T15:00:00Z","entities":{"sentiment":{"basic":"Bullish"}}},
+{"id":2,"body":"$ABCD offering incoming","created_at":"2026-11-05T15:05:00Z","entities":{"sentiment":{"basic":"Bearish"}}},
+{"id":3,"body":"$ABCD watching","created_at":"2026-11-05T15:10:00Z","entities":{"sentiment":null}},
+{"id":4,"body":"$ABCD breakout","created_at":"2026-11-05T15:20:00Z","entities":{"sentiment":{"basic":"Bullish"}}}
+]}

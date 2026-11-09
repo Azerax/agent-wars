@@ -1,0 +1,5 @@
+requests>=2.31
+pandas>=2.1
+numpy>=1.26
+# optional: Claude reads headlines and filings to grade catalysts
+anthropic>=0.90

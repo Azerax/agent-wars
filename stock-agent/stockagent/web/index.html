@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock Agent Desk</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #16181d; --muted: #646b78; --line: #e3e6eb;
+  --up: #0f7b4f; --down: #b42318; --accent: #2f5bd3; --target: #a15c07; --chip: #eef1f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #0f1115; --panel: #171a21; --ink: #e8eaef; --muted: #9aa3b2; --line: #272c36;
+          --up: #3ccf8e; --down: #ff6b5e; --accent: #7ea2ff; --target: #f0a845; --chip: #222733; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+       font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { padding: 16px; display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; }
+header h1 { font-size: 18px; margin: 0; }
+header .sub { color: var(--muted); }
+main { padding: 0 16px 32px; display: grid; gap: 16px; grid-template-columns: repeat(12, 1fr); }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+.span12 { grid-column: span 12; } .span8 { grid-column: span 8; } .span6 { grid-column: span 6; } .span4 { grid-column: span 4; }
+@media (max-width: 900px) { .span8, .span6, .span4 { grid-column: span 12; } }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.kpi .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.kpi .l { color: var(--muted); font-size: 12px; }
+.up { color: var(--up); } .down { color: var(--down); } .muted { color: var(--muted); }
+.tbl { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td.num, th.num { text-align: right; }
+td.wrap { white-space: normal; min-width: 200px; }
+.chip { display: inline-block; padding: 1px 7px; border-radius: 99px; background: var(--chip); font-size: 12px; margin: 1px 2px 1px 0; }
+.warn { color: var(--down); }
+.bar { height: 8px; background: var(--chip); border-radius: 99px; overflow: hidden; }
+.bar > div { height: 100%; background: var(--accent); }
+.journal { max-height: 380px; overflow-y: auto; font-size: 13px; }
+.journal div { padding: 4px 0; border-bottom: 1px solid var(--line); }
+.journal .t { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
+svg text { fill: var(--muted); font-size: 11px; }
+form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
+input, select, button { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+input { width: 96px; }
+button { background: var(--accent); color: #fff; border: 0; cursor: pointer; }
+.note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Stock Agent Desk</h1>
+  <span class="sub" id="sub">loading…</span>
+</header>
+<main>
+  <section class="span12"><div class="kpis" id="kpis"></div></section>
+
+  <section class="span8">
+    <h2>Equity vs. the doubling path (log scale)</h2>
+    <div id="chart"></div>
+    <div class="note">Dashed line: the starting cash doubled every target period. Solid: the account. The gap is the honest scoreboard.</div>
+  </section>
+  <section class="span4">
+    <h2>Current cycle</h2>
+    <div id="cycle"></div>
+    <h2 style="margin-top:16px">Completed cycles</h2>
+    <div class="tbl" id="cycles"></div>
+  </section>
+
+  <section class="span6"><h2>Open positions</h2><div class="tbl" id="positions"></div></section>
+  <section class="span6"><h2>Open orders</h2><div class="tbl" id="orders"></div></section>
+
+  <section class="span12"><h2>Closed trades (net of all fees)</h2><div class="tbl" id="trades"></div></section>
+
+  <section class="span6"><h2>Watchlist (scout's ranking)</h2><div class="tbl" id="watchlist"></div></section>
+  <section class="span6"><h2>Tip sources — what their tips did next</h2><div class="tbl" id="sources"></div></section>
+
+  <section class="span6"><h2>Strategies — learned from closed trades</h2><div class="tbl" id="strategies"></div></section>
+  <section class="span6"><h2>Recent signals and decisions</h2><div class="tbl" id="signals"></div></section>
+
+  <section class="span8"><h2>Journal</h2><div class="journal" id="journal"></div></section>
+  <section class="span4">
+    <h2>Manual paper order</h2>
+    <form id="orderForm">
+      <label>Side <select name="side"><option>buy</option><option>sell</option></select></label>
+      <label>Qty <input name="qty" type="number" min="1" required></label>
+      <label>Symbol <input name="symbol" required></label>
+      <label>Type <select name="type"><option>limit</option><option>market</option><option>stop</option></select></label>
+      <label>Limit <input name="limit_price" type="number" step="0.0001"></label>
+      <label>Stop <input name="stop_price" type="number" step="0.0001"></label>
+      <button type="submit">Place</button>
+    </form>
+    <div class="note" id="orderMsg">Fills against the next quote the agent polls. Same fees and spread model as the agent.</div>
+    <h2 style="margin-top:16px">Recent tips</h2>
+    <div class="tbl" id="tips"></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const usd = (v, d = 2) => v == null ? "–" : (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
+const pct = (v, d = 1) => v == null ? "–" : (v * 100).toFixed(d) + "%";
+const sgn = (v) => v == null ? "" : v > 0 ? "up" : v < 0 ? "down" : "";
+const px = (v) => v == null ? "–" : (v < 1 ? v.toFixed(4) : v.toFixed(2));
+
+function table(cols, rows, empty = "none") {
+  if (!rows.length) return `<div class="muted">${empty}</div>`;
+  const head = cols.map((c) => `<th class="${c.num ? "num" : ""}">${esc(c.h)}</th>`).join("");
+  const body = rows.map((r) => "<tr>" + cols.map((c) => {
+    const v = c.f(r); const cls = [c.num ? "num" : "", c.wrap ? "wrap" : "", c.cls ? c.cls(r) : ""].join(" ");
+    return `<td class="${cls}">${v}</td>`;
+  }).join("") + "</tr>").join("");
+  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function chart(curve, starting, target) {
+  const pts = curve.filter((p) => p.kind === "close" || p.kind === "intraday");
+  const el = $("chart");
+  if (pts.length < 2) { el.innerHTML = '<div class="muted">The curve appears after the first trading day closes.</div>'; return; }
+  const W = el.clientWidth || 640, H = 240, L = 52, R = 10, T = 10, B = 24;
+  const ys = pts.flatMap((p) => [p.equity, p.target_equity]).concat([starting]).filter((v) => v > 0);
+  let lo = Math.log(Math.min(...ys)), hi = Math.log(Math.max(...ys));
+  if (hi - lo < 0.1) { hi += 0.05; lo -= 0.05; }
+  const x = (i) => L + (i / (pts.length - 1)) * (W - L - R);
+  const y = (v) => T + (1 - (Math.log(v) - lo) / (hi - lo)) * (H - T - B);
+  const line = (k) => pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[k]).toFixed(1)}`).join("");
+  const ticks = [];
+  for (let k = 0; k < 5; k++) { const v = Math.exp(lo + (k / 4) * (hi - lo)); ticks.push(v); }
+  el.innerHTML = `<svg width="100%" viewBox="0 0 ${W} ${H}" role="img" aria-label="equity chart">
+    ${ticks.map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>
+      <text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${usd(v, v < 1000 ? 0 : 0)}</text>`).join("")}
+    <path d="${line("target_equity")}" fill="none" stroke="var(--target)" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <path d="${line("equity")}" fill="none" stroke="var(--accent)" stroke-width="2"/>
+    <text x="${L}" y="${H - 6}">${esc(pts[0].day)}</text>
+    <text x="${W - R}" y="${H - 6}" text-anchor="end">${esc(pts[pts.length - 1].day)}</text>
+  </svg>`;
+}
+
+function render(s) {
+  const a = s.account, p = s.pace || {}, m = s.metrics;
+  $("sub").textContent = `account ${a.name} · started ${a.start_date} with ${usd(a.starting_cash)} · market ${s.phase} · ${s.as_of.slice(0, 16).replace("T", " ")} ET`;
+  const kp = [
+    ["Equity", usd(a.equity), sgn(a.equity - a.starting_cash)],
+    ["Multiple of start", (p.total_multiple ?? 0).toFixed(2) + "×", sgn((p.total_multiple ?? 1) - 1)],
+    [`Doubling path today`, usd(p.target_today), ""],
+    ["Share of path", pct(p.vs_target, 0), (p.vs_target ?? 0) >= 1 ? "up" : "down"],
+    ["Buying power (settled)", usd(a.buying_power), ""],
+    ["Net P&L after fees", usd(m.net_pnl), sgn(m.net_pnl)],
+    ["Fees paid", usd(m.fees_paid), ""],
+    ["Max drawdown", pct(m.max_drawdown, 0), m.max_drawdown > 0.25 ? "down" : ""],
+  ];
+  $("kpis").innerHTML = kp.map(([l, v, c]) => `<div class="kpi"><div class="v ${c}">${v}</div><div class="l">${esc(l)}</div></div>`).join("");
+  chart(s.equity_curve, a.starting_cash, s.target);
+
+  const prog = p.cycle_start_equity ? Math.max(0, Math.min(1, Math.log(Math.max(p.equity, 1e-9) / p.cycle_start_equity) / Math.log(p.cycle_target / p.cycle_start_equity))) : 0;
+  $("cycle").innerHTML = `<div>Cycle ${p.cycle_number ?? "–"}, day ${p.cycle_day ?? "–"} of ${s.target.period_trading_days}</div>
+    <div class="muted">${usd(p.cycle_start_equity)} → target ${usd(p.cycle_target)} · now ${(p.cycle_multiple ?? 0).toFixed(2)}×</div>
+    <div class="bar" style="margin:8px 0"><div style="width:${(prog * 100).toFixed(0)}%"></div></div>
+    <div class="muted">Needs ${pct(p.required_daily_return)} per day for the rest of the cycle. Risk per trade does not rise when behind.</div>`;
+  const done = s.cycles.filter((c) => c.multiple != null).slice(-10).reverse();
+  $("cycles").innerHTML = table([
+    {h: "#", f: (c) => c.number}, {h: "Days", f: (c) => `${c.start_day.slice(5)}–${c.end_day.slice(5)}`},
+    {h: "Start", num: 1, f: (c) => usd(c.start_equity)}, {h: "End", num: 1, f: (c) => usd(c.end_equity)},
+    {h: "×", num: 1, f: (c) => c.multiple.toFixed(2), cls: (c) => c.hit ? "up" : c.multiple < 1 ? "down" : ""},
+  ], done, "no completed cycles yet");
+
+  $("positions").innerHTML = table([
+    {h: "Symbol", f: (r) => `<b>${esc(r.symbol)}</b>`}, {h: "Qty", num: 1, f: (r) => r.qty},
+    {h: "Avg", num: 1, f: (r) => px(r.avg_price)}, {h: "Last", num: 1, f: (r) => px(r.last)},
+    {h: "P&L", num: 1, f: (r) => usd(r.unrealized), cls: (r) => sgn(r.unrealized)},
+    {h: "Stop", num: 1, f: (r) => px(r.stop)}, {h: "Target", num: 1, f: (r) => px(r.target)},
+    {h: "Strategy", f: (r) => esc(r.strategy || "manual")}, {h: "Day", num: 1, f: (r) => r.hold_days},
+  ], s.positions, "flat");
+
+  const open = s.orders.filter((o) => o.status === "open" || o.status === "partial");
+  $("orders").innerHTML = table([
+    {h: "Id", f: (o) => o.id}, {h: "Side", f: (o) => o.side}, {h: "Qty", num: 1, f: (o) => o.qty},
+    {h: "Symbol", f: (o) => esc(o.symbol)}, {h: "Type", f: (o) => o.type},
+    {h: "Price", num: 1, f: (o) => px(o.limit_price ?? o.stop_price)}, {h: "Why", wrap: 1, f: (o) => esc(o.reason || "")},
+  ], open, "no open orders");
+
+  $("trades").innerHTML = table([
+    {h: "Symbol", f: (t) => `<b>${esc(t.symbol)}</b>`}, {h: "Strategy", f: (t) => esc(t.strategy || "manual")},
+    {h: "Opened", f: (t) => esc(t.opened_at.slice(0, 16).replace("T", " "))},
+    {h: "Closed", f: (t) => esc((t.closed_at || "").slice(0, 16).replace("T", " "))},
+    {h: "Qty", num: 1, f: (t) => t.entry_qty},
+    {h: "Entry", num: 1, f: (t) => px(t.entry_qty ? t.entry_value / t.entry_qty : null)},
+    {h: "Exit", num: 1, f: (t) => px(t.exit_qty ? t.exit_value / t.exit_qty : null)},
+    {h: "Fees", num: 1, f: (t) => usd(t.fees)}, {h: "Net", num: 1, f: (t) => usd(t.net_pnl), cls: (t) => sgn(t.net_pnl)},
+    {h: "R", num: 1, f: (t) => t.r_multiple == null ? "–" : t.r_multiple.toFixed(2)},
+    {h: "Exit reason", f: (t) => esc(t.exit_reason || "")},
+  ], s.trades.filter((t) => t.status === "closed").slice(0, 40), "no closed trades yet");
+
+  $("watchlist").innerHTML = table([
+    {h: "Symbol", f: (w) => `<b>${esc(w.symbol)}</b>`}, {h: "Score", num: 1, f: (w) => w.score.toFixed(2)},
+    {h: "Catalyst", num: 1, f: (w) => (w.catalyst_score ?? 0).toFixed(1), cls: (w) => sgn(w.catalyst_score)},
+    {h: "Sources", f: (w) => w.sources.map((x) => `<span class="chip">${esc(x)}</span>`).join("") + (w.dilution_risk ? ' <span class="warn">dilution</span>' : "")},
+  ], s.watchlist, "scout has not run yet");
+
+  const src = Object.entries(s.source_stats).sort((a, b) => b[1].tips - a[1].tips);
+  $("sources").innerHTML = table([
+    {h: "Source", f: ([k]) => esc(k)}, {h: "Tips", num: 1, f: ([, v]) => v.tips},
+    {h: "Next day", num: 1, f: ([, v]) => pct(v.avg_fwd_1d), cls: ([, v]) => sgn(v.avg_fwd_1d)},
+    {h: "Hit", num: 1, f: ([, v]) => pct(v.hit_rate_1d, 0)},
+    {h: "4 days", num: 1, f: ([, v]) => pct(v.avg_fwd_4d), cls: ([, v]) => sgn(v.avg_fwd_4d)},
+    {h: "Doubled", num: 1, f: ([, v]) => v.doubled_in_4d},
+    {h: "Weight", num: 1, f: ([k]) => (s.source_weights[k] ?? 1).toFixed(2)},
+  ], src, "no tips recorded yet");
+
+  const names = Array.from(new Set([...Object.keys(s.strategy_weights), ...Object.keys(s.strategy_stats)]));
+  $("strategies").innerHTML = table([
+    {h: "Strategy", f: (n) => esc(n)}, {h: "Trades", num: 1, f: (n) => s.strategy_stats[n]?.trades ?? 0},
+    {h: "Win", num: 1, f: (n) => pct(s.strategy_stats[n]?.win_rate, 0)},
+    {h: "Avg R", num: 1, f: (n) => s.strategy_stats[n]?.avg_r?.toFixed(2) ?? "–"},
+    {h: "Net", num: 1, f: (n) => usd(s.strategy_stats[n]?.net_pnl ?? 0), cls: (n) => sgn(s.strategy_stats[n]?.net_pnl)},
+    {h: "Weight", num: 1, f: (n) => (s.strategy_weights[n] ?? 1).toFixed(2) + (s.strategy_stats[n]?.quarantined ? " ⛔" : "")},
+  ], names);
+
+  $("signals").innerHTML = table([
+    {h: "Time", f: (g) => esc(g.ts.slice(5, 16).replace("T", " "))}, {h: "Symbol", f: (g) => esc(g.symbol)},
+    {h: "Strategy", f: (g) => esc(g.strategy)}, {h: "Score", num: 1, f: (g) => (g.final_score ?? g.score).toFixed(2)},
+    {h: "Decision", f: (g) => esc(g.decision || ""), cls: (g) => g.decision === "entered" ? "up" : ""},
+    {h: "Why", wrap: 1, f: (g) => `<span class="muted">${esc((g.decision_reason || "").slice(0, 120))}</span>`},
+  ], s.signals.slice(0, 30), "no signals yet");
+
+  $("journal").innerHTML = s.journal.slice(0, 120).map((j) =>
+    `<div class="${j.level === "warn" || j.level === "error" ? "warn" : ""}"><span class="t">${esc(j.ts.slice(5, 16).replace("T", " "))}</span>${j.symbol ? `<b>${esc(j.symbol)}</b> ` : ""}${esc(j.message)}</div>`
+  ).join("") || '<div class="muted">nothing yet</div>';
+
+  $("tips").innerHTML = table([
+    {h: "Symbol", f: (t) => esc(t.symbol)}, {h: "Source", f: (t) => `<span class="chip">${esc(t.source)}</span>`},
+    {h: "Price", num: 1, f: (t) => px(t.price_at_tip)},
+    {h: "1d", num: 1, f: (t) => pct(t.fwd_1d), cls: (t) => sgn(t.fwd_1d)},
+  ], s.tips.filter((t) => t.eligible).slice(0, 25), "no tips yet");
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/state", {cache: "no-store"});
+    render(await r.json());
+  } catch (e) { $("sub").textContent = "could not load state: " + e; }
+}
+
+$("orderForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const body = Object.fromEntries([...f.entries()].filter(([, v]) => v !== ""));
+  body.qty = Number(body.qty);
+  for (const k of ["limit_price", "stop_price"]) if (body[k]) body[k] = Number(body[k]);
+  const r = await fetch("/api/orders", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const o = await r.json();
+  $("orderMsg").textContent = r.ok ? `order ${o.id} ${o.status}` : `rejected: ${JSON.parse(o.meta || "{}").reject_reason || o.error}`;
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

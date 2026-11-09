@@ -1,0 +1,5 @@
+{"finance":{"result":[{"id":"day_gainers","title":"Day Gainers","count":3,"quotes":[
+{"symbol":"ABCD","shortName":"Abcd Therapeutics","quoteType":"EQUITY","regularMarketPrice":2.31,"regularMarketChangePercent":31.2,"regularMarketVolume":5400000,"averageDailyVolume3Month":900000,"marketCap":45000000,"sharesOutstanding":19500000,"fullExchangeName":"NasdaqCM"},
+{"symbol":"BIGG","shortName":"Big Co","quoteType":"EQUITY","regularMarketPrice":145.2,"regularMarketChangePercent":6.1,"regularMarketVolume":12000000,"averageDailyVolume3Month":8000000,"marketCap":90000000000,"fullExchangeName":"NYSE"},
+{"symbol":"XETF","shortName":"Some ETF","quoteType":"ETF","regularMarketPrice":3.1,"regularMarketChangePercent":8.0,"regularMarketVolume":100000}
+]}],"error":null}}

@@ -1,0 +1,8 @@
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+config.toml
+backtest*.json
