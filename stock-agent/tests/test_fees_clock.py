@@ -83,3 +83,11 @@ def test_default_config_is_valid():
     cfg = Config()
     assert cfg.risk.starting_cash == 100.0
     assert cfg.target.multiple == 2.0 and cfg.target.period_trading_days == 4
+
+
+def test_config_toml_in_windows_encodings(tmp_path):
+    body = '[data]\nsec_user_agent = "stockagent contact@example.com"\n'
+    for enc in ("utf-8", "utf-8-sig", "utf-16"):
+        p = tmp_path / f"c-{enc}.toml"
+        p.write_text(body, encoding=enc)
+        assert load_config(p).data.sec_user_agent == "stockagent contact@example.com"

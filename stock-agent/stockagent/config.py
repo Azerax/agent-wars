@@ -297,8 +297,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
             path = "config.toml"
     explicit_fee_keys: set[str] = set()
     if path is not None:
-        with open(path, "rb") as fh:
-            raw = tomllib.load(fh)
+        # Windows editors often save UTF-16 or UTF-8 with a BOM; tomllib wants plain UTF-8.
+        raw = tomllib.loads(_read_text_any(Path(path)))
         explicit_fee_keys = set(raw.get("fees", {}).keys())
         _merge(cfg, raw)
     preset = FEE_PRESETS.get(cfg.fees.preset)
