@@ -65,12 +65,18 @@ class Quote:
         return self.last
 
     def bid_ask(self, cfg: ExecutionConfig) -> tuple[float, float]:
-        """Return (bid, ask), modelling them from the last price if missing or crossed."""
+        """Return (bid, ask), modelling them from the last price if missing,
+        crossed, stale, or far wider than this stock's normal spread."""
+        model = estimate_spread(self.last, self.avg_dollar_volume, cfg)
         if self.bid and self.ask and self.ask >= self.bid > 0:
-            # A stale quote far from the last trade is worse than a model.
-            if abs(self.mid() - self.last) / self.last < 0.05:
+            # A stale quote far from the last trade is worse than a model, and
+            # so is one venue's quote (Alpaca's free feed is IEX only), which
+            # can be many times wider than the whole market's best bid/offer.
+            stale = abs(self.mid() - self.last) / self.last >= 0.05
+            too_wide = (self.ask - self.bid) > max(3 * model, 2 * tick_size(self.last))
+            if not stale and not too_wide:
                 return self.bid, self.ask
-        half = estimate_spread(self.last, self.avg_dollar_volume, cfg) / 2
+        half = model / 2
         return round_to_tick(max(self.last - half, tick_size(self.last)), "down"), round_to_tick(
             self.last + half, "up"
         )

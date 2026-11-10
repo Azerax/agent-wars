@@ -167,3 +167,16 @@ def test_new_marketable_limit_gets_the_quote(broker):
     broker.submit_order("ABCD", "buy", 10, "limit", limit_price=2.10)
     broker.process_quote(q())
     assert broker.db.one("SELECT price FROM fills")["price"] == 2.01
+
+
+def test_one_venue_quote_far_wider_than_normal_is_not_used(cfg):
+    from stockagent.execution import Quote as Q
+
+    wide = Q("ABCD", 2.36, bid=2.30, ask=2.50, avg_dollar_volume=5_000_000)  # 8% wide: one exchange's quote
+    bid, ask = wide.bid_ask(cfg.execution)
+    assert ask - bid < 0.05 and bid < 2.36 < ask
+    normal = Q("ABCD", 2.36, bid=2.35, ask=2.37, avg_dollar_volume=5_000_000)
+    assert normal.bid_ask(cfg.execution) == (2.35, 2.37)
+    one_sided = Q("AAPL", 350.87, bid=334.59, ask=None, avg_dollar_volume=10e9)  # the after-hours IEX quote from doctor
+    b, a = one_sided.bid_ask(cfg.execution)
+    assert b < 350.87 < a and a - b < 2
