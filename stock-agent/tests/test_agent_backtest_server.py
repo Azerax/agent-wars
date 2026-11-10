@@ -243,3 +243,22 @@ def test_stop_hit_between_polls_seen_from_new_session_low(cfg, db, market):
     agent.tick()
     t = broker.trade(trade["id"])
     assert t["status"] == "closed" and t["exit_reason"] == "stop_loss"
+
+
+def test_journal_command_summarises_activity(tmp_path, monkeypatch, capsys):
+    from stockagent.cli import main
+    from stockagent.db import Database
+
+    path = tmp_path / "agent.db"
+    db = Database(path)
+    db.insert("tips", {"ts": "2026-11-09T10:00:00-05:00", "day": "2026-11-09", "symbol": "BIGG", "source": "yahoo:day_gainers",
+                       "kind": "mover", "raw_score": 1, "eligible": 0, "reject_reason": "price 145.20 above $5.0"})
+    db.insert("signals", {"ts": "2026-11-09T10:00:00-05:00", "symbol": "ABCD", "strategy": "momentum_breakout", "score": 0.8,
+                          "decision": "skip", "decision_reason": "avg dollar volume $400,000 below $1,000,000"})
+    db.insert("journal", {"ts": "2026-11-09T10:00:00-05:00", "level": "warn", "event": "source_failed",
+                          "message": "stocktwits unavailable"})
+    db.close()
+    monkeypatch.setenv("STOCKAGENT_DB", str(path))
+    assert main(["journal", "--days", "3650"]) == 0
+    out = capsys.readouterr().out
+    assert "price # above $#" in out and "avg dollar volume # below #" in out and "source_failed" in out

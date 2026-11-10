@@ -201,6 +201,70 @@ def cmd_doctor(args) -> int:
     return 2
 
 
+def cmd_journal(args) -> int:
+    """What the agent has been doing, condensed: is it alive, is it finding
+    tips, are strategies firing, and why are signals being skipped."""
+    import re
+    from datetime import datetime
+
+    cfg, db, clk, broker = _setup(args)
+    since = (clk.now() - timedelta(days=args.days)).date().isoformat()
+    last = db.one("SELECT ts, event, message FROM journal ORDER BY id DESC LIMIT 1")
+    last_mark = db.scalar("SELECT MAX(ts) FROM marks")
+    now = clk.now()
+
+    def ago(ts: str | None) -> str:
+        if not ts:
+            return "never"
+        mins = (now - datetime.fromisoformat(ts)).total_seconds() / 60
+        return f"{ts[:16].replace('T', ' ')} ({mins:.0f} min ago)" if mins < 600 else ts[:16].replace("T", " ")
+
+    print(f"database: {cfg.data.db_path}")
+    print(f"last journal entry: {ago(last['ts'] if last else None)}")
+    print(f"last quote received: {ago(last_mark)}")
+    tips = db.one("SELECT COUNT(*) AS n, COALESCE(SUM(eligible),0) AS ok, COUNT(DISTINCT symbol) AS syms FROM tips WHERE day>=?", [since])
+    print(f"tips since {since}: {tips['n']} ({tips['ok']} eligible, {tips['syms']} symbols)")
+    by_src = db.all("SELECT source, COUNT(*) AS n FROM tips WHERE day>=? GROUP BY source ORDER BY n DESC", [since])
+    if by_src:
+        print("  by source: " + ", ".join(f"{r['source']} {r['n']}" for r in by_src))
+    rejects = db.all(
+        "SELECT reject_reason AS r FROM tips WHERE day>=? AND eligible=0 AND reject_reason IS NOT NULL", [since]
+    )
+    if rejects:
+        counts: dict[str, int] = {}
+        for r in rejects:
+            key = re.sub(r"[\d.,]+", "#", r["r"])
+            counts[key] = counts.get(key, 0) + 1
+        print("  rejected tips: " + ", ".join(f"{k} x{v}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:5]))
+    wl = db.all("SELECT symbol, score FROM watchlist WHERE day=(SELECT MAX(day) FROM watchlist) ORDER BY score DESC")
+    print(f"watchlist ({len(wl)}): " + ", ".join(f"{w['symbol']} {w['score']:.2f}" for w in wl[:15]))
+    sigs = db.all("SELECT strategy, decision, decision_reason FROM signals WHERE ts>=?", [since])
+    print(f"signals since {since}: {len(sigs)}")
+    if sigs:
+        by_strat: dict[str, int] = {}
+        reasons: dict[str, int] = {}
+        for g in sigs:
+            by_strat[g["strategy"]] = by_strat.get(g["strategy"], 0) + 1
+            key = f"{g['decision']}: " + re.sub(r"\$?[\d.,]+%?", "#", g["decision_reason"] or "")
+            reasons[key] = reasons.get(key, 0) + 1
+        print("  by strategy: " + ", ".join(f"{k} {v}" for k, v in sorted(by_strat.items(), key=lambda kv: -kv[1])))
+        print("  decisions:")
+        for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])[:8]:
+            print(f"    {v:>4}  {k[:110]}")
+    probs = db.all(
+        "SELECT ts, level, event, message FROM journal WHERE level IN ('warn','error') AND ts>=? ORDER BY id DESC LIMIT 8",
+        [since],
+    )
+    if probs:
+        print("recent warnings/errors:")
+        for j in probs:
+            print(f"  {j['ts'][5:16].replace('T', ' ')} {j['event']}: {j['message'][:140]}")
+    print(f"\nlast {args.limit} journal entries:")
+    for j in reversed(db.all("SELECT ts, event, symbol, message FROM journal ORDER BY id DESC LIMIT ?", [args.limit])):
+        print(f"  {j['ts'][5:16].replace('T', ' ')} {j['event']:<14} {(j['symbol'] or ''):<6} {j['message'][:120]}")
+    return 0
+
+
 def cmd_order(args) -> int:
     cfg, db, clk, broker = _setup(args)
     o = broker.submit_order(args.symbol, args.side, args.qty, args.type, limit_price=args.limit, stop_price=args.stop,
@@ -255,6 +319,11 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("doctor", help="check which data sources are reachable")
     s.set_defaults(fn=cmd_doctor)
+
+    s = sub.add_parser("journal", help="what the agent has been doing, and why it did or did not trade")
+    s.add_argument("--days", type=int, default=1, help="look back this many days")
+    s.add_argument("--limit", type=int, default=25, help="recent journal entries to show")
+    s.set_defaults(fn=cmd_journal)
 
     s = sub.add_parser("order", help="place a manual paper order (filled by the agent's next tick)")
     s.add_argument("side", choices=["buy", "sell"])

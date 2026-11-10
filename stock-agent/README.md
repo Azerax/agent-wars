@@ -50,6 +50,7 @@ Other commands:
 ```bash
 python -m stockagent scout --evaluate  # find and rank tips now; score old ones first
 python -m stockagent report            # account, doubling scoreboard, strategies, sources
+python -m stockagent journal           # is it alive, is it finding tips, why it did or did not trade
 python -m stockagent backtest --universe 40 --start 2026-05-01 --end 2026-10-30
 python -m stockagent order buy 20 ABCD --limit 2.10   # manual paper order
 python -m stockagent run --once        # a single tick, for cron
