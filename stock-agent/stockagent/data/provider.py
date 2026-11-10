@@ -69,11 +69,6 @@ class MarketData:
         """Extra movers lists (Alpha Vantage). Empty when not configured."""
         return []
 
-    def news_sentiment(self, symbol: str) -> dict[str, Any] | None:
-        """Scored news for one symbol (Alpha Vantage). None when not configured."""
-        return None
-
-
 def avg_dollar_volume(df: pd.DataFrame, n: int = 20) -> float | None:
     if df is None or df.empty:
         return None
@@ -118,8 +113,6 @@ class LiveMarketData(MarketData):
     def _daily_sources(self, symbol: str, range_: str, start: date, end: date, days: int):
         yield "yahoo", lambda: self._yahoo_daily(symbol, range_)
         yield "nasdaq", lambda: self.nasdaq.historical(symbol, start, end)
-        if self.alpha.enabled:
-            yield "alphavantage", lambda: self.alpha.daily(symbol, full=days > 100)
         yield "stooq", lambda: self.stooq.daily(symbol)
 
     def _yahoo_daily(self, symbol: str, range_: str) -> pd.DataFrame:
@@ -136,8 +129,6 @@ class LiveMarketData(MarketData):
             ("yahoo", lambda: self.yahoo.chart_period(symbol, s, e)),
             ("nasdaq", lambda: (self.nasdaq.historical(symbol, start, end, ttl=86400), None, [])),
         ]
-        if self.alpha.enabled:
-            sources.append(("alphavantage", lambda: (self.alpha.daily(symbol, full=True), None, [])))
         sources.append(("stooq", lambda: (self.stooq.daily(symbol), None, [])))
         for name, fetch in sources:
             try:
@@ -159,8 +150,7 @@ class LiveMarketData(MarketData):
         return df
 
     def quotes(self, symbols: list[str]) -> dict[str, Quote]:
-        """Yahoo's quote API (has bid/ask), else Yahoo's chart, else Nasdaq,
-        else Alpha Vantage (rate-limited, so last)."""
+        """Yahoo's quote API (has bid/ask), else Yahoo's chart, else Nasdaq."""
         symbols = sorted(set(symbols))
         out: dict[str, Quote] = {}
         raw: dict[str, dict] = {}
@@ -176,7 +166,7 @@ class LiveMarketData(MarketData):
             if q and q.get("regularMarketPrice"):
                 out[sym] = self._from_yahoo_quote(sym, q, now)
                 continue
-            for fetch in (self._from_yahoo_chart, self._from_nasdaq, self._from_alpha):
+            for fetch in (self._from_yahoo_chart, self._from_nasdaq):
                 try:
                     quote = fetch(sym, now)
                 except DataError as exc:
@@ -234,15 +224,6 @@ class LiveMarketData(MarketData):
             volume=info["volume"], extra={"source": "nasdaq", "market_status": info.get("market_status")},
         )
 
-    def _from_alpha(self, sym: str, now: datetime) -> Quote | None:
-        if not self.alpha.enabled:
-            return None
-        g = self.alpha.global_quote(sym)
-        return Quote(
-            symbol=sym, last=g["price"], ts=now, open=g["open"], day_high=g["high"], day_low=g["low"],
-            prev_close=g["prev_close"], volume=g["volume"], extra={"source": "alphavantage", "day": g.get("day")},
-        )
-
     # ---------------------------------------------------------------- discovery
     def universe(self) -> pd.DataFrame:
         return self.nasdaq.screener(self.cfg.universe.exchanges)
@@ -296,11 +277,6 @@ class LiveMarketData(MarketData):
         if not self.alpha.enabled:
             return []
         return self.alpha.movers()
-
-    def news_sentiment(self, symbol: str) -> dict[str, Any] | None:
-        if not self.alpha.enabled:
-            return None
-        return self.alpha.news_sentiment(symbol)
 
     def stocktwits_trending(self) -> list[dict[str, Any]]:
         return self.social.stocktwits_trending()

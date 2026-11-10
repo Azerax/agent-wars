@@ -78,7 +78,7 @@ before the open:
 | Source | What it contributes |
 | --- | --- |
 | Yahoo predefined screeners | day gainers, small-cap gainers, most actives, aggressive small caps |
-| Alpha Vantage (with a key) | top gainers and most-actively-traded lists as tips; relevance-weighted news sentiment for the top three candidates each scan |
+| Alpha Vantage (with a key) | its top-gainers and most-active lists, as one more tip source |
 | Nasdaq stock screener | the whole listed universe: biggest % gainers and most-traded names in the price range |
 | StockTwits | trending symbols, then bullish/bearish ratio for anything shortlisted |
 | Reddit | r/pennystocks and friends, ticker mentions weighted by score and comments, validated against the listed universe |
@@ -197,25 +197,22 @@ DELETE /api/orders/<id>
 
 ## Data reality
 
-Prices come from the first source that answers: Yahoo, then Nasdaq's
-quote and history API, then Alpha Vantage, then Stooq.
-
-Yahoo now answers automated clients with HTTP 429 from the first request
-(it blocks them by connection fingerprint). The agent does not disguise
-itself to get past that: a host that blocks or rate-limits is left alone for
-15 minutes and the next source is used. Without Yahoo:
+Prices are free and have no daily cap: Yahoo's chart data first, then
+Nasdaq's quote and history API (Stooq is a last resort but now mostly
+refuses downloads). In the first live run Yahoo's chart and Nasdaq both
+worked; Yahoo's bid/ask quote endpoint answered HTTP 429, so spreads are
+modelled. A host that blocks or rate-limits is left alone for 15 minutes and
+the next source is used; the agent does not disguise itself to get past a
+block. If Yahoo is unavailable entirely:
 
 - Nasdaq still gives daily history, last price, bid/ask and the day's range,
   but no opening price, so gap setups fire less often.
 - There are no minute bars, so a stop that is hit and recovered between two
   polls is only caught when the dip made a new session low.
 
-Alpha Vantage's free key allows 25 requests a day and 5 a minute, and says
-so with HTTP 200 and an "Information" message rather than an error. The
-client keeps a daily budget on disk, caches every answer, and spends calls
-on the movers list and on news sentiment for the best few candidates; it is
-a price source only when everything else has failed. Raise
-`data.alphavantage_daily_limit` if you have a premium key.
+Alpha Vantage is optional and only supplies its movers list. Its free key
+allows 25 requests a day; the list is cached for two hours, so a day uses
+about five.
 
 The other free sources are unofficial too. Yahoo's endpoints have no SLA and
 change shape; StockTwits and Reddit restrict anonymous access more each year.
@@ -223,8 +220,7 @@ Requests identify themselves as `stockagent/0.1` (`data.user_agent`), and a
 site that refuses that is treated as unavailable. The code treats each source
 as optional: failures are journaled, a host that refuses connections is
 skipped for a while so it cannot stall the loop, and the agent keeps trading
-on whatever is still answering. For dependable prices, a keyed market-data
-API (Alpha Vantage premium, or similar) is the robust option. Run `doctor` first; if prices themselves are
+on whatever is still answering. Run `doctor` first; if prices themselves are
 unavailable the agent will not trade.
 
 Quotes are polled (60 seconds by default), not streamed. The agent cannot see
@@ -252,7 +248,7 @@ stockagent/
   report.py       metrics and the state behind the dashboard
   server.py       local dashboard + JSON API
   data/           Yahoo, Nasdaq, Alpha Vantage, Stooq, SEC, StockTwits, Reddit, RSS
-tests/            113 tests; fixtures are hand-written in each API's shape
+tests/            112 tests; fixtures are hand-written in each API's shape
 ```
 
 ```bash

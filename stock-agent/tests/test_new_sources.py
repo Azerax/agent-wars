@@ -40,17 +40,10 @@ def test_nasdaq_error_status_raises():
 
 
 # --------------------------------------------------------------- alphavantage
-def test_av_parsers():
-    g = av.parse_global_quote(load("av_global_quote.json"))
-    assert g["price"] == 2.31 and g["open"] == 2.12 and g["prev_close"] == 2.10 and g["change_pct"] == 10.0
-    df = av.parse_daily(load("av_daily.json"))
-    assert list(df.index.date) == [date(2026, 11, 5), date(2026, 11, 6)] and df["close"].iloc[-1] == 2.31
+def test_av_movers_parser():
     movers = av.parse_movers(load("av_movers.json"))
     assert {(m["symbol"], m["list"]) for m in movers} >= {("ABCD", "gainers"), ("MNOP", "active"), ("EFGH", "losers")}
-    news = av.parse_news_sentiment(load("av_news.json"), "ABCD")
-    assert news["articles"] == 2
-    assert news["sentiment"] == pytest.approx((0.9 * 0.4 + 0.1 * -0.2) / 1.0)
-    assert news["headlines"][0]["published"].hour == 8
+    assert next(m for m in movers if m["symbol"] == "ABCD")["change_pct"] == 10.0
 
 
 def test_av_rate_limit_message_is_an_error():
@@ -71,24 +64,26 @@ class _StubHttp(HttpClient):
         return self.payloads.pop(0)
 
 
-def test_av_budget_cache_and_exhaustion():
+def test_av_cache_and_daily_limit():
     http = _StubHttp([load("av_movers.json"), load("av_limit.json")])
     client = av.AlphaVantage(http, "SECRETKEY123", daily_limit=25, per_minute=5)
     client.movers()
-    client.movers()  # second call served from cache, no request spent
+    client.movers()  # served from the 2-hour cache, no request spent
     assert len(http.calls) == 1 and client.remaining_today() == 24
+    http._cache.execute("DELETE FROM http_cache")  # cache expired
     with pytest.raises(DataError, match="limit"):
-        client.global_quote("ABCD")
+        client.movers()
     assert client.remaining_today() == 0  # Alpha Vantage said the day's quota is gone
 
 
-def test_av_daily_budget_is_enforced_before_calling():
-    http = _StubHttp([load("av_global_quote.json")] * 5)
-    client = av.AlphaVantage(http, "SECRETKEY123", daily_limit=8, per_minute=10)  # price share: 2 calls
-    client.global_quote("AAAA")
-    client.global_quote("BBBB")
+def test_av_stops_calling_once_the_daily_limit_is_reached():
+    http = _StubHttp([load("av_movers.json")] * 3)
+    client = av.AlphaVantage(http, "SECRETKEY123", daily_limit=2, per_minute=10)
+    for _ in range(2):
+        client.movers()
+        http._cache.execute("DELETE FROM http_cache")
     with pytest.raises(DataError, match="budget"):
-        client.global_quote("CCCC")
+        client.movers()
     assert len(http.calls) == 2
 
 
@@ -151,23 +146,9 @@ def test_daily_bars_fall_back_to_nasdaq_when_yahoo_blocks(monkeypatch):
 
 
 # --------------------------------------------------------------------- scout
-def test_scout_uses_alpha_vantage_movers_and_sentiment(cfg, db, clk):
+def test_scout_uses_alpha_vantage_movers(cfg, db, clk):
     md = scripted_market()
     md.alt_movers = lambda: av.parse_movers(load("av_movers.json"))
-    md.news_sentiment = lambda sym: av.parse_news_sentiment(load("av_news.json"), sym)
-    cands = Scout(cfg, db, md, clk).run()
+    Scout(cfg, db, md, clk).run()
     sources = {r["source"] for r in db.all("SELECT source FROM tips")}
     assert "alphavantage:gainers" in sources and "alphavantage:losers" not in sources
-    top = next(c for c in cands if c["symbol"] == "ABCD")
-    assert "av_sentiment" in top["catalyst"].tags and top["news_sentiment"]["articles"] == 2
-
-
-def test_av_budget_shares_keep_one_use_from_starving_another():
-    http = _StubHttp([load("av_global_quote.json")] * 3 + [load("av_news.json")])
-    client = av.AlphaVantage(http, "SECRETKEY123", daily_limit=12, per_minute=50)  # prices 3, news 6, movers 3
-    for sym in ("AAAA", "BBBB", "CCCC"):
-        client.global_quote(sym)
-    with pytest.raises(DataError, match="prices share"):
-        client.global_quote("DDDD")
-    assert client.remaining_today("news") == 6
-    assert client.news_sentiment("ABCD")["articles"] == 2

@@ -31,8 +31,6 @@ log = logging.getLogger(__name__)
 
 
 class Scout:
-    # Symbols per scan that get Alpha Vantage news sentiment (each costs a call).
-    SENTIMENT_TOP = 3
     def __init__(
         self,
         cfg: Config,
@@ -245,8 +243,8 @@ class Scout:
         ranked = sorted(by_symbol.values(), key=lambda c: -c["score"])
         n = enrich_top if enrich_top is not None else self.cfg.agent.watchlist_size
         out = []
-        for i, c in enumerate(ranked[:n]):
-            self._enrich(c, sentiment=i < self.SENTIMENT_TOP)
+        for c in ranked[:n]:
+            self._enrich(c)
             out.append(c)
         out.sort(key=lambda c: -c["final_score"])
         today = self.clock.now().date().isoformat()
@@ -264,7 +262,7 @@ class Scout:
             )
         return out
 
-    def _enrich(self, c: dict[str, Any], sentiment: bool = False) -> None:
+    def _enrich(self, c: dict[str, Any]) -> None:
         sym = c["symbol"]
         now = self.clock.now().astimezone(timezone.utc)
         headlines: list[dict[str, Any]] = []
@@ -273,26 +271,8 @@ class Scout:
                 headlines = self.md.news(sym)
             except DataError as exc:
                 c["news_error"] = str(exc)[:120]
-        av = None
-        if sentiment and "alphavantage" in self.cfg.data.sources:
-            try:
-                av = self.md.news_sentiment(sym)
-            except DataError as exc:
-                self.source_errors.setdefault("alphavantage_news", str(exc))
-        if av:
-            seen = {(h.get("title") or "").lower()[:90] for h in headlines}
-            headlines += [h for h in av["headlines"] if (h.get("title") or "").lower()[:90] not in seen]
-            c["news_sentiment"] = {k: av[k] for k in ("articles", "sentiment", "relevance")}
         filings = catalysts.recent_filings_for(sym, self.filings, now)
         lex = catalysts.assess(sym, headlines, filings, now)
-        if av and av.get("sentiment") is not None and av.get("relevance", 0) >= 0.3:
-            # Alpha Vantage sentiment runs roughly -0.35..+0.35 per article;
-            # scale it onto the -5..+5 catalyst range, capped at +/-2.
-            bump = max(-2.0, min(2.0, av["sentiment"] * 6))
-            lex.score = round(max(-5.0, min(5.0, lex.score + bump)), 2)
-            lex.tags.append("av_sentiment")
-            lex.evidence.append(f"{bump:+.1f} Alpha Vantage sentiment {av['sentiment']:+.2f} over {av['articles']} articles")
-            lex.summary = "; ".join(lex.evidence[:4])
         assessment = lex
         if self.llm is not None and self.llm.enabled and (headlines or filings):
             ih = catalysts.input_hash(headlines, filings)

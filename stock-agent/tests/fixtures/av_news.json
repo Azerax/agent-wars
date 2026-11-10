@@ -1,6 +1,0 @@
-{"items":"2","sentiment_score_definition":"x <= -0.35: Bearish; ...","relevance_score_definition":"0 < x <= 1",
-"feed":[
-{"title":"Abcd Therapeutics wins $12 million contract","url":"https://example.com/n1","time_published":"20261109T083000","authors":["A"],"summary":"...","source":"Example Wire","overall_sentiment_score":0.31,"overall_sentiment_label":"Somewhat-Bullish",
- "ticker_sentiment":[{"ticker":"ABCD","relevance_score":"0.900000","ticker_sentiment_score":"0.400000","ticker_sentiment_label":"Bullish"},{"ticker":"EFGH","relevance_score":"0.1","ticker_sentiment_score":"-0.5","ticker_sentiment_label":"Bearish"}]},
-{"title":"Small caps rally","url":"https://example.com/n2","time_published":"20261108T120000","source":"Other","ticker_sentiment":[{"ticker":"ABCD","relevance_score":"0.100000","ticker_sentiment_score":"-0.200000"}]}
-]}
