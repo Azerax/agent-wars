@@ -162,6 +162,8 @@ def test_provider_selection(monkeypatch):
     "API Key: PKABCDEF123456\nSecret Key: topsecretvalue123",
     "PKABCDEF123456\ntopsecretvalue123",
     '$env:APCA_API_KEY_ID="PKABCDEF123456"\n$env:APCA_API_SECRET_KEY="topsecretvalue123"',
+    "Endpoint https://paper-api.alpaca.markets/v2\nKey PKABCDEF123456\nSecret topsecretvalue123",
+    "Endpoint: https://paper-api.alpaca.markets/v2\nAPI Key ID PKABCDEF123456\nSecret Key topsecretvalue123",
 ])
 def test_alpaca_key_file_formats(text):
     assert parse_alpaca_file(text) == ("PKABCDEF123456", "topsecretvalue123")

@@ -317,6 +317,13 @@ def parse_alpaca_file(text: str) -> tuple[str, str]:
                 secret = secret or value
             elif "KEY" in name or name.endswith("ID"):
                 key = key or value
+        elif m2 := re.match(r"^(.*?(?:key|secret|id))\s+(\S+)$", line, re.I):
+            # Pasted from Alpaca's dashboard as "Key PK..." / "Secret ...".
+            name, value = m2.group(1).upper(), m2.group(2).strip("'\"")
+            if "SECRET" in name:
+                secret = secret or value
+            else:
+                key = key or value
         elif re.fullmatch(r"[A-Za-z0-9]{10,80}", line):
             bare.append(line)
     if not key and bare:
