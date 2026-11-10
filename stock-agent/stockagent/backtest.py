@@ -53,7 +53,14 @@ def pick_universe(md: MarketData, cfg: Config, size: int) -> list[str]:
     """Most-traded low-priced stocks right now. Survivorship-biased by construction."""
     import re
 
-    df = md.universe().dropna(subset=["price", "volume"])
+    df = md.universe()
+    if df["price"].isna().all():
+        # Alpaca's stock list has no prices: fetch last price and the previous
+        # session's volume for every listed stock (a few dozen batched requests).
+        pv = md.price_volume(list(df["symbol"]))
+        df = df.assign(price=df["symbol"].map(lambda s: (pv.get(s) or {}).get("price")),
+                       volume=df["symbol"].map(lambda s: (pv.get(s) or {}).get("volume")))
+    df = df.dropna(subset=["price", "volume"])
     u = cfg.universe
     rx = [re.compile(p) for p in u.exclude_symbol_patterns]
     df = df[(df["price"] >= u.min_price) & (df["price"] <= u.max_price) & (df["volume"] >= u.min_volume)]

@@ -85,14 +85,37 @@ class Scout:
             price = row.get("price")
         if volume is None and row:
             volume = row.get("volume")
-        ok, why = self.eligible(symbol, price, volume)
-        if ok and self.universe_df is not None and not self.universe_df.empty and row is None:
-            ok, why = False, "not in listed universe (OTC or unknown)"
-        return {
+        tip = {
             "symbol": symbol, "source": source, "kind": kind, "raw_score": round(float(raw), 4),
-            "price_at_tip": price, "eligible": ok, "reject_reason": why or None, "title": title, "url": url,
-            "payload": payload or {},
+            "price_at_tip": price, "volume": volume, "title": title, "url": url, "payload": payload or {},
         }
+        self._judge(tip)
+        return tip
+
+    def _judge(self, tip: dict[str, Any]) -> None:
+        ok, why = self.eligible(tip["symbol"], tip["price_at_tip"], tip["volume"])
+        if ok and self._uindex and tip["symbol"] not in self._uindex:
+            ok, why = False, "not in listed universe (OTC or unknown)"
+        tip["eligible"], tip["reject_reason"] = ok, why or None
+
+    def _fill_prices(self, tips: list[dict[str, Any]]) -> None:
+        """Tips from chatter and filings carry no price. When the universe has
+        no prices either (Alpaca), ask the data source for them in one batch."""
+        missing = sorted({t["symbol"] for t in tips if t["price_at_tip"] is None and t["symbol"] in self._uindex})
+        if not missing:
+            return
+        try:
+            found = self.md.price_volume(missing)
+        except (DataError, NotImplementedError) as exc:
+            self.source_errors.setdefault("prices_for_tips", str(exc))
+            return
+        for t in tips:
+            pv = found.get(t["symbol"])
+            if pv and t["price_at_tip"] is None:
+                t["price_at_tip"] = pv.get("price")
+                if t["volume"] is None:
+                    t["volume"] = pv.get("volume")
+                self._judge(t)
 
     def discover(self) -> list[dict[str, Any]]:
         self.source_errors = {}
@@ -108,21 +131,24 @@ class Scout:
             if self.universe_df is not None and not self.universe_df.empty else {}
         )
 
-        if "yahoo_screeners" in sources:
+        if "yahoo_screeners" in sources or "screeners" in sources:
             try:
                 for r in self.md.screener_movers():
                     chg = (r.get("change_pct") or 0.0) / 100
                     rv = (r.get("volume") or 0) / r["avg_volume"] if r.get("avg_volume") else 1.0
                     raw = max(0.0, min(1.0, chg / 0.3)) * 0.6 + min(rv / 5, 1.0) * 0.4
+                    if r.get("list") == "active":
+                        raw = 0.5  # most-active lists carry volume but no change or average
                     tips.append(self._tip(
-                        r["symbol"], f"yahoo:{r.get('screener', 'screener')}", "mover", raw, r.get("price"),
+                        r["symbol"], r.get("source") or f"yahoo:{r.get('screener', 'screener')}", "mover", raw, r.get("price"),
                         r.get("volume"), r.get("name"),
                         payload={k: r.get(k) for k in ("change_pct", "volume", "avg_volume", "market_cap", "shares_outstanding")},
                     ))
             except DataError as exc:
                 self.source_errors["yahoo_screeners"] = str(exc)
 
-        if "nasdaq_movers" in sources and self.universe_df is not None and not self.universe_df.empty:
+        has_prices = self.universe_df is not None and {"price", "volume", "change_pct"} <= set(self.universe_df.columns)
+        if "nasdaq_movers" in sources and has_prices and not self.universe_df.empty:
             u = self.cfg.universe
             df = self.universe_df.dropna(subset=["price", "volume"])
             df = df[(df["price"] >= u.min_price) & (df["price"] <= u.max_price) & (df["volume"] >= u.min_volume)]
@@ -196,6 +222,7 @@ class Scout:
                     payload={"items": f["items"], "company": f["company"]},
                 ))
 
+        self._fill_prices(tips)
         now = self.clock.now()
         today = now.date().isoformat()
         for t in tips:

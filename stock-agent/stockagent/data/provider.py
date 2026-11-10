@@ -11,9 +11,11 @@ from typing import Any
 
 import pandas as pd
 
+from .. import clock as mcal
 from ..clock import ET
 from ..config import Config
 from ..execution import Quote
+from .alpaca import Alpaca
 from .alphavantage import AlphaVantage
 from .http import DataError, HttpClient
 from .nasdaq import Nasdaq
@@ -68,6 +70,11 @@ class MarketData:
     def alt_movers(self) -> list[dict[str, Any]]:
         """Extra movers lists (Alpha Vantage). Empty when not configured."""
         return []
+
+    def price_volume(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+        """Price and a full-day volume for symbols whose tips arrived without
+        them. Only needed when the universe itself carries no prices."""
+        return {}
 
 def avg_dollar_volume(df: pd.DataFrame, n: int = 20) -> float | None:
     if df is None or df.empty:
@@ -288,27 +295,169 @@ class LiveMarketData(MarketData):
         return self.social.reddit_hot(sub)
 
 
+class AlpacaMarketData(LiveMarketData):
+    """Prices, bars, universe, movers and news from Alpaca only. Never calls
+    Yahoo or Nasdaq. SEC filings, StockTwits, Reddit RSS, Google News and
+    Alpha Vantage's movers come from the shared sources in LiveMarketData."""
+
+    def __init__(self, cfg: Config, http: HttpClient | None = None):
+        super().__init__(cfg, http)
+        self.alpaca = Alpaca(self.http, cfg.data.alpaca_key, cfg.data.alpaca_secret)
+
+    def daily_bars(self, symbol: str, days: int = 200) -> pd.DataFrame:
+        now = datetime.now(ET)
+        start = now - timedelta(days=int(days * 1.5) + 10)
+        df = self.alpaca.bars([symbol], "1Day", start, now, ttl=1800).get(symbol)
+        if df is None or df.empty:
+            raise DataError(f"alpaca: no daily bars for {symbol}")
+        return df.tail(days)
+
+    def daily_history(self, symbol: str, start: date, end: date) -> pd.DataFrame:
+        s = datetime.combine(start, datetime.min.time(), ET)
+        e = datetime.combine(end, datetime.max.time(), ET)
+        df = self.alpaca.bars([symbol], "1Day", s, e, ttl=86400).get(symbol)
+        if df is None or df.empty:
+            raise DataError(f"alpaca: no history for {symbol}")
+        return df[(df.index.date >= start) & (df.index.date <= end)]
+
+    def intraday_bars(self, symbol: str, interval: str = "1m") -> pd.DataFrame:
+        """IEX minute bars (real time on the free plan): enough to see a stop
+        that was hit between two polls."""
+        now = datetime.now(ET)
+        open_dt, _ = mcal.session_times(now.date())
+        return self.alpaca.bars([symbol], "1Min", open_dt, now, feed="iex", ttl=20).get(symbol, pd.DataFrame())
+
+    def splits(self, symbol: str) -> list[dict[str, Any]]:
+        return []
+
+    def quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        symbols = sorted(set(symbols))
+        if not symbols:
+            return {}
+        snaps = self.alpaca.snapshots(symbols)
+        try:
+            sip = self.alpaca.today_sip(symbols)
+        except DataError as exc:
+            log.info("alpaca SIP bars unavailable: %s", exc)
+            sip = {}
+        out = {}
+        for sym in symbols:
+            sn = snaps.get(sym)
+            if not sn:
+                continue
+            today = sip.get(sym) or {}
+            last = sn["last"]
+            highs = [v for v in (today.get("high"), sn.get("high"), last) if v]
+            lows = [v for v in (today.get("low"), sn.get("low"), last) if v]
+            out[sym] = Quote(
+                symbol=sym, last=last, ts=sn.get("ts") or datetime.now(ET),
+                bid=sn.get("bid"), ask=sn.get("ask"),
+                open=today.get("open") or sn.get("open"),
+                day_high=max(highs), day_low=min(lows), prev_close=sn.get("prev_close"),
+                # Consolidated volume as of ~15 minutes ago; IEX alone is a few
+                # percent of the market and would make every stock look illiquid.
+                volume=today.get("volume"),
+                extra={"source": "alpaca", "iex_volume": sn.get("iex_volume")},
+            )
+        return out
+
+    def universe(self) -> pd.DataFrame:
+        return self.alpaca.assets()
+
+    def price_volume(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
+        symbols = sorted(set(symbols))
+        if not symbols:
+            return {}
+        snaps = self.alpaca.snapshots(symbols)
+        prev = self.alpaca.previous_day(symbols, datetime.now(ET).date())
+        out = {}
+        for sym in symbols:
+            price = (snaps.get(sym) or {}).get("last") or (prev.get(sym) or {}).get("close")
+            if price is None:
+                continue
+            out[sym] = {"price": price, "volume": (prev.get(sym) or {}).get("volume")}
+        return out
+
+    def screener_movers(self) -> list[dict[str, Any]]:
+        rows = []
+        errors = []
+        for fetch in (self.alpaca.movers, self.alpaca.most_actives):
+            try:
+                rows.extend(r for r in fetch() if r["list"] != "losers")
+            except DataError as exc:
+                errors.append(str(exc))
+        if not rows and errors:
+            raise DataError("; ".join(errors))
+        for r in rows:
+            r["source"] = f"alpaca:{r['list']}"
+        return rows
+
+    def news(self, symbol: str) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        errors = []
+        for fetch in (lambda: self.alpaca.news(symbol), lambda: self.news_feeds.google(f'"{symbol}" stock')):
+            try:
+                items.extend(fetch())
+            except DataError as exc:
+                errors.append(str(exc))
+        if not items and errors:
+            raise DataError("; ".join(errors))
+        seen, unique = set(), []
+        for it in sorted(items, key=lambda i: i.get("published") or datetime.min.replace(tzinfo=ET), reverse=True):
+            key = (it.get("title") or "").lower()[:90]
+            if key and key not in seen:
+                seen.add(key)
+                unique.append(it)
+        return unique[:25]
+
+
+def make_market_data(cfg: Config, http: HttpClient | None = None) -> LiveMarketData:
+    """Alpaca when configured (or required), otherwise the Yahoo/Nasdaq endpoints."""
+    has_keys = bool(cfg.data.alpaca_key and cfg.data.alpaca_secret)
+    if cfg.data.provider == "alpaca" or (cfg.data.provider == "auto" and has_keys):
+        if not has_keys:
+            raise DataError("data.provider is 'alpaca' but no Alpaca keys were found (.alpaca file or ALPACA_KEY/ALPACA_SECRET)")
+        return AlpacaMarketData(cfg, http)
+    return LiveMarketData(cfg, http)
+
+
 def check_sources(md: LiveMarketData, on_result=None) -> list[tuple[str, str, bool, str]]:
     """Probe each source once: (name, role, ok, detail). Used by `stockagent doctor`.
-    Alpha Vantage is probed with the movers list, which the scout then reuses
-    from cache, so the check does not waste the free key's 25 daily calls."""
-    today = datetime.now(ET).date()
-    probes = [
-        ("yahoo chart", "prices", lambda: f"{len(md.yahoo.chart('SPY', '5d', '1d', ttl=0)[0])} bars"),
-        ("yahoo quote (bid/ask)", "prices", lambda: f"{len(md.yahoo.quotes(['SPY'], ttl=0))} quotes"),
-        # Nasdaq's quote API is asked for assetclass=stocks, so probe a stock, not an ETF.
-        ("nasdaq daily history", "prices",
-         lambda: f"{len(md.nasdaq.historical('AAPL', today - timedelta(days=20), today, ttl=0))} bars"),
-        ("nasdaq quote", "prices", lambda: f"last {md.nasdaq.info('AAPL', ttl=0)['last']}"),
-        ("stooq daily", "prices", lambda: f"{len(md.stooq.daily('SPY', ttl=0))} bars"),
-        ("nasdaq screener", "universe", lambda: f"{len(md.nasdaq.screener(['nasdaq'], ttl=0))} stocks"),
-        ("yahoo screeners", "tips", lambda: f"{len(md.yahoo.screener('day_gainers', 25, ttl=0))} rows"),
+    With Alpaca configured, Yahoo and Nasdaq are not contacted at all."""
+    now = datetime.now(ET)
+    today = now.date()
+    if isinstance(md, AlpacaMarketData):
+        a = md.alpaca
+        probes = [
+            ("alpaca daily bars (SIP)", "prices",
+             lambda: f"{len(a.bars(['AAPL'], '1Day', now - timedelta(days=20), now, ttl=0)['AAPL'])} bars"),
+            ("alpaca quote (IEX)", "prices",
+             lambda: "last {last} bid {bid} ask {ask}".format(**a.snapshots(["AAPL"], ttl=0)["AAPL"])),
+            ("alpaca today's volume (SIP)", "prices",
+             lambda: f"{len(a.today_sip(['AAPL'], ttl=0))} symbols" if mcal.is_trading_day(today) else "market closed today"),
+            ("alpaca stock list", "universe", lambda: f"{len(a.assets(ttl=0))} listed stocks"),
+            ("alpaca movers", "tips", lambda: f"{len(a.movers(ttl=0))} gainers/losers"),
+            ("alpaca most actives", "tips", lambda: f"{len(a.most_actives(ttl=0))} symbols"),
+            ("alpaca news", "news", lambda: f"{len(a.news('AAPL', ttl=0))} items"),
+        ]
+    else:
+        probes = [
+            ("yahoo chart", "prices", lambda: f"{len(md.yahoo.chart('SPY', '5d', '1d', ttl=0)[0])} bars"),
+            ("yahoo quote (bid/ask)", "prices", lambda: f"{len(md.yahoo.quotes(['SPY'], ttl=0))} quotes"),
+            # Nasdaq's quote API is asked for assetclass=stocks, so probe a stock, not an ETF.
+            ("nasdaq daily history", "prices",
+             lambda: f"{len(md.nasdaq.historical('AAPL', today - timedelta(days=20), today, ttl=0))} bars"),
+            ("nasdaq quote", "prices", lambda: f"last {md.nasdaq.info('AAPL', ttl=0)['last']}"),
+            ("nasdaq screener", "universe", lambda: f"{len(md.nasdaq.screener(['nasdaq'], ttl=0))} stocks"),
+            ("yahoo screeners", "tips", lambda: f"{len(md.yahoo.screener('day_gainers', 25, ttl=0))} rows"),
+            ("yahoo news", "news", lambda: f"{len(md.yahoo.news('SPY', 5, ttl=0))} items"),
+        ]
+    probes += [
         ("alphavantage movers", "tips",
          lambda: f"{len(md.alpha.movers())} rows; {md.alpha.remaining_today()} of {md.alpha.daily_limit} calls left today"),
         ("stocktwits trending", "tips", lambda: f"{len(md.social.stocktwits_trending())} symbols"),
-        ("reddit r/pennystocks", "tips", lambda: f"{len(md.social.reddit_hot('pennystocks', 10))} posts"),
+        ("reddit r/pennystocks (rss)", "tips", lambda: f"{len(md.social.reddit_hot('pennystocks', 10))} posts"),
         ("sec edgar filings", "tips", lambda: f"{len(md.sec.current('8-K', 10))} filings"),
-        ("yahoo news", "news", lambda: f"{len(md.yahoo.news('SPY', 5, ttl=0))} items"),
         ("google news rss", "news", lambda: f"{len(md.news_feeds.google('penny stock'))} items"),
     ]
     results = []

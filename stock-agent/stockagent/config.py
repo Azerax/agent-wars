@@ -158,6 +158,15 @@ class DataConfig:
     # Alpha Vantage. The key is read from the ALPHA or ALPHAVANTAGE_API_KEY
     # environment variable, or from a `.alpha` file (ALPHA=yourkey) in the
     # working directory or the project folder. Keep it out of config.toml.
+    # Where prices, bars, the stock universe and news come from:
+    #   "alpaca" - only Alpaca (licensed; needs a free account's keys)
+    #   "legacy" - Yahoo and Nasdaq web endpoints (not licensed for automated use)
+    #   "auto"   - Alpaca when its keys are found, otherwise legacy
+    provider: str = "auto"
+    # Filled from ALPACA_KEY / ALPACA_SECRET or a .alpaca file; keep them out of config.toml.
+    alpaca_key: str = ""
+    alpaca_secret: str = ""
+    alpaca_key_file: str = ".alpaca"
     alphavantage_api_key: str = ""
     alphavantage_key_file: str = ".alpha"
     alphavantage_daily_limit: int = 25  # free key: 25 requests/day
@@ -287,6 +296,53 @@ def find_alphavantage_key(cfg_key: str = "", key_file: str = ".alpha") -> tuple[
     return "", "not found"
 
 
+ALPACA_KEY_NAMES = ("ALPACA_KEY", "ALPACA_API_KEY", "ALPACA_KEY_ID", "APCA_API_KEY_ID")
+ALPACA_SECRET_NAMES = ("ALPACA_SECRET", "ALPACA_SECRET_KEY", "ALPACA_API_SECRET", "APCA_API_SECRET_KEY")
+
+
+def parse_alpaca_file(text: str) -> tuple[str, str]:
+    """Accepts NAME=value or NAME: value lines (any name containing KEY/ID for
+    the key and SECRET for the secret), or the two values bare, key first."""
+    key = secret = ""
+    bare = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^(?:\$env:|export\s+|set\s+)?([A-Za-z_ ][A-Za-z0-9_ ]*?)\s*[=:]\s*(.+)$", line)
+        if m:
+            name = m.group(1).strip().upper().replace(" ", "_")
+            value = m.group(2).strip().strip("'\"").strip()
+            if "SECRET" in name:
+                secret = secret or value
+            elif "KEY" in name or name.endswith("ID"):
+                key = key or value
+        elif re.fullmatch(r"[A-Za-z0-9]{10,80}", line):
+            bare.append(line)
+    if not key and bare:
+        key = bare.pop(0)
+    if not secret and bare:
+        secret = bare.pop(0)
+    return key, secret
+
+
+def find_alpaca_keys(key_file: str = ".alpaca") -> tuple[str, str, str]:
+    """Return (key, secret, where they came from). Never log the values."""
+    env_key = next((os.environ[n].strip() for n in ALPACA_KEY_NAMES if os.environ.get(n, "").strip()), "")
+    env_secret = next((os.environ[n].strip() for n in ALPACA_SECRET_NAMES if os.environ.get(n, "").strip()), "")
+    if env_key and env_secret:
+        return env_key, env_secret, "environment variables"
+    for base in (Path.cwd(), PROJECT_DIR):
+        for name in (key_file, key_file + ".txt"):
+            p = base / name
+            if p.is_file():
+                key, secret = parse_alpaca_file(_read_text_any(p))
+                if key and secret:
+                    return key, secret, f"file {p}"
+                return "", "", f"file {p} (could not find both a key and a secret in it)"
+    return "", "", "not found"
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     cfg = Config()
     if path is None:
@@ -312,6 +368,10 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         cfg.data.sec_user_agent = sec_ua
     key, _where = find_alphavantage_key(cfg.data.alphavantage_api_key, cfg.data.alphavantage_key_file)
     cfg.data.alphavantage_api_key = key
+    if not (cfg.data.alpaca_key and cfg.data.alpaca_secret):
+        cfg.data.alpaca_key, cfg.data.alpaca_secret, _where = find_alpaca_keys(cfg.data.alpaca_key_file)
+    if cfg.data.provider not in ("auto", "alpaca", "legacy"):
+        raise ValueError(f"data.provider must be auto, alpaca or legacy, not {cfg.data.provider!r}")
     db = os.environ.get("STOCKAGENT_DB")
     if db:
         cfg.data.db_path = db

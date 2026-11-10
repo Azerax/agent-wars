@@ -12,7 +12,6 @@ from .http import HttpClient
 
 STOCKTWITS_TRENDING = "https://api.stocktwits.com/api/2/trending/symbols.json"
 STOCKTWITS_STREAM = "https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
-REDDIT_HOT = "https://www.reddit.com/r/{sub}/hot.json"
 REDDIT_RSS = "https://www.reddit.com/r/{sub}/hot/.rss"
 REDDIT_UA = "stockagent-paper-trader/0.1 (read-only research)"
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -154,17 +153,8 @@ class Social:
         return parse_stocktwits_stream(self.http.get_json(STOCKTWITS_STREAM.format(symbol=symbol), ttl=600))
 
     def reddit_hot(self, sub: str, limit: int = 75) -> list[dict[str, Any]]:
-        from .http import DataError
-
-        headers = {"User-Agent": REDDIT_UA}
-        try:
-            return parse_reddit_listing(
-                self.http.get_json(REDDIT_HOT.format(sub=sub), params={"limit": limit}, headers=headers, ttl=600)
-            )
-        except DataError as json_err:
-            try:
-                return parse_reddit_rss(
-                    self.http.get_text(REDDIT_RSS.format(sub=sub), params={"limit": limit}, headers=headers, ttl=600)
-                )
-            except DataError as rss_err:
-                raise DataError(f"reddit json: {json_err}; rss: {rss_err}") from rss_err
+        """Reddit's public RSS feed. Its JSON API needs a registered app, so it
+        is not used."""
+        text = self.http.get_text(REDDIT_RSS.format(sub=sub), params={"limit": limit},
+                                  headers={"User-Agent": REDDIT_UA}, ttl=600)
+        return parse_reddit_rss(text)

@@ -22,9 +22,9 @@ def _setup(args):
 
 
 def _market(cfg):
-    from .data.provider import LiveMarketData
+    from .data.provider import make_market_data
 
-    return LiveMarketData(cfg)
+    return make_market_data(cfg)
 
 
 def cmd_init(args) -> int:
@@ -175,16 +175,24 @@ def cmd_serve(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    from .config import find_alphavantage_key
-    from .data.http import HttpClient
-    from .data.provider import LiveMarketData, check_sources
+    from .config import find_alpaca_keys, find_alphavantage_key
+    from .data.http import DataError, HttpClient
+    from .data.provider import AlpacaMarketData, check_sources, make_market_data
     from .llm import CatalystLLM
 
     cfg = load_config(args.config)
     http = HttpClient(cfg.data.cache_path, cfg.data.user_agent, timeout=10.0, min_interval=0.2, retries=1)
-    md = LiveMarketData(cfg, http)
+    try:
+        md = make_market_data(cfg, http)
+    except DataError as exc:
+        print(f"cannot start: {exc}")
+        return 2
+    _k, _s, alpaca_where = find_alpaca_keys(cfg.data.alpaca_key_file)
     _key, where = find_alphavantage_key("", cfg.data.alphavantage_key_file)
     found = where if cfg.data.alphavantage_api_key else "not found (set ALPHA, or put ALPHA=yourkey in .alpha)"
+    using = "Alpaca (licensed API)" if isinstance(md, AlpacaMarketData) else "Yahoo + Nasdaq web endpoints (legacy)"
+    print(f"price data: {using}   [data.provider = {cfg.data.provider}]")
+    print(f"alpaca keys: {alpaca_where}")
     print(f"alpha vantage key: {found}")
     print("data sources:", flush=True)
 
@@ -203,15 +211,13 @@ def cmd_doctor(args) -> int:
     now = mcal.Clock().now()
     print(f"market: {mcal.market_phase(now)} ({now:%Y-%m-%d %H:%M} ET)")
     prices = ok_by_role.get("prices", [])
-    has_history = any(n in prices for n in ("yahoo chart", "nasdaq daily history", "stooq daily"))
-    has_quotes = any(n in prices for n in ("yahoo chart", "yahoo quote (bid/ask)", "nasdaq quote"))
+    has_history = any(n in prices for n in ("yahoo chart", "nasdaq daily history", "alpaca daily bars (SIP)"))
+    has_quotes = any(n in prices for n in ("yahoo chart", "yahoo quote (bid/ask)", "nasdaq quote", "alpaca quote (IEX)"))
     print()
     if has_history and has_quotes and ok_by_role.get("universe"):
         print(f"READY: prices via {', '.join(prices)}; tips from {len(ok_by_role.get('tips', []))} sources")
-        if "yahoo quote (bid/ask)" not in prices and "yahoo chart" not in prices:
-            print("       without Yahoo, opening prices may be missing, so gap setups fire less often")
         return 0
-    print("NOT READY: the agent needs daily history, live quotes and the Nasdaq universe to trade")
+    print("NOT READY: the agent needs daily history, live quotes and the list of listed stocks to trade")
     return 2
 
 

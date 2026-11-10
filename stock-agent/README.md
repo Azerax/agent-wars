@@ -58,8 +58,19 @@ python -m stockagent run --once        # a single tick, for cron
 python -m stockagent reset --cash 100
 ```
 
-Optional environment:
+Data keys (both files are gitignored; `doctor` says where it found each key,
+never the key itself):
 
+- **Alpaca (recommended)**: a free account at alpaca.markets (paper trading, no
+  deposit) gives an API key and secret. Put them in a file named `.alpaca`:
+
+  ```
+  ALPACA_KEY=PK...
+  ALPACA_SECRET=...
+  ```
+
+  With these present the agent takes prices, history, the stock list, movers
+  and news from Alpaca only, and never calls Yahoo or Nasdaq.
 - **Alpha Vantage key**: put `ALPHA=yourkey` in a file named `.alpha` in the
   `stock-agent` folder (it is gitignored), or set the `ALPHA` environment
   variable. `doctor` says where it found the key, never the key itself.
@@ -197,31 +208,29 @@ DELETE /api/orders/<id>
 
 ## Data reality
 
-Prices are free and have no daily cap: Yahoo's chart data first, then
-Nasdaq's quote and history API (Stooq is a last resort but now mostly
-refuses downloads). In the first live run Yahoo's chart and Nasdaq both
-worked; Yahoo's bid/ask quote endpoint answered HTTP 429, so spreads are
-modelled. A host that blocks or rate-limits is left alone for 15 minutes and
-the next source is used; the agent does not disguise itself to get past a
-block. If Yahoo is unavailable entirely:
+**Use Alpaca.** Its terms allow programs like this one; Yahoo's terms forbid
+automated collection outside Yahoo's own (discontinued) API, and the agent's
+older Yahoo/Nasdaq path uses the endpoints behind their websites. Set
+`data.provider` to `alpaca` to refuse to run without Alpaca keys, `legacy` to
+force the old path, or leave `auto` (Alpaca whenever its keys are found).
 
-- Nasdaq still gives daily history, last price, bid/ask and the day's range,
-  but no opening price, so gap setups fire less often.
-- There are no minute bars, so a stop that is hit and recovered between two
-  polls is only caught when the dip made a new session low.
+Alpaca's free plan allows 200 requests a minute; the agent uses a few. Its
+real-time feed is the IEX exchange only, a few percent of US volume, so:
 
-Alpha Vantage is optional and only supplies its movers list. Its free key
-allows 25 requests a day; the list is cached for two hours, so a day uses
-about five.
+- last price and bid/ask come from IEX, live;
+- volume, liquidity and the day's open/high/low come from consolidated (SIP)
+  bars, which the free plan serves once they are 15 minutes old;
+- daily history is consolidated and split-adjusted. Reverse splits are not
+  flagged on this path.
 
-The other free sources are unofficial too. Yahoo's endpoints have no SLA and
-change shape; StockTwits and Reddit restrict anonymous access more each year.
-Requests identify themselves as `stockagent/0.1` (`data.user_agent`), and a
-site that refuses that is treated as unavailable. The code treats each source
-as optional: failures are journaled, a host that refuses connections is
-skipped for a while so it cannot stall the loop, and the agent keeps trading
-on whatever is still answering. Run `doctor` first; if prices themselves are
-unavailable the agent will not trade.
+Other sources, all optional: SEC EDGAR (allows automated access when you
+identify yourself), Alpha Vantage's movers list (your key; about five calls a
+day), Reddit and Google News RSS feeds (published for feed readers; Reddit's
+JSON API needs a registered app, so it is not used), and StockTwits'
+trending list (its terms for anonymous use are unconfirmed; drop
+`stocktwits` from `data.sources` to stop using it). Failures are journaled,
+a host that refuses or rate-limits is skipped for a while, and requests
+identify themselves as `stockagent/0.1`.
 
 Quotes are polled (60 seconds by default), not streamed. The agent cannot see
 the order book, halts, or the pre-market auction, and fills are modelled, not
@@ -247,8 +256,8 @@ stockagent/
   backtest.py     daily-bar replay through the same engine and broker
   report.py       metrics and the state behind the dashboard
   server.py       local dashboard + JSON API
-  data/           Yahoo, Nasdaq, Alpha Vantage, Stooq, SEC, StockTwits, Reddit, RSS
-tests/            112 tests; fixtures are hand-written in each API's shape
+  data/           Alpaca, SEC, Alpha Vantage, StockTwits, Reddit/Google RSS (+ legacy Yahoo/Nasdaq)
+tests/            132 tests; fixtures are hand-written in each API's shape
 ```
 
 ```bash

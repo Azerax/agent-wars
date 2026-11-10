@@ -9,5 +9,7 @@ backtest*.json
 # API keys: never commit these
 .alpha
 .alpha.txt
+.alpaca
+.alpaca.txt
 .env
 *.key

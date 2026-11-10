@@ -1,0 +1,7 @@
+[
+ {"id":"1","class":"us_equity","exchange":"NASDAQ","symbol":"ABCD","name":"Abcd Therapeutics Inc. Common Stock","status":"active","tradable":true,"marginable":true,"shortable":false,"easy_to_borrow":false,"fractionable":false},
+ {"id":"2","class":"us_equity","exchange":"NYSE","symbol":"EFGH","name":"Efgh Corp","status":"active","tradable":true},
+ {"id":"3","class":"us_equity","exchange":"ARCA","symbol":"SPY","name":"SPDR S&P 500 ETF","status":"active","tradable":true},
+ {"id":"4","class":"us_equity","exchange":"OTC","symbol":"OTCX","name":"Some OTC Co","status":"active","tradable":true},
+ {"id":"5","class":"us_equity","exchange":"NASDAQ","symbol":"DEAD","name":"Delisted Inc","status":"inactive","tradable":false}
+]

@@ -50,6 +50,7 @@ effort = "low"
 max_calls_per_day = 40
 
 [data]
+provider = "auto"              # auto: Alpaca when .alpaca keys exist | alpaca: Alpaca only | legacy: Yahoo/Nasdaq
 db_path = "data/stockagent.db"
 sources = ["yahoo_screeners", "nasdaq_movers", "stocktwits", "reddit", "sec_filings", "news"]
 reddit_subs = ["pennystocks", "smallstreetbets", "RobinHoodPennyStocks"]
