@@ -84,7 +84,7 @@ def test_av_budget_cache_and_exhaustion():
 
 def test_av_daily_budget_is_enforced_before_calling():
     http = _StubHttp([load("av_global_quote.json")] * 5)
-    client = av.AlphaVantage(http, "SECRETKEY123", daily_limit=2, per_minute=10)
+    client = av.AlphaVantage(http, "SECRETKEY123", daily_limit=8, per_minute=10)  # price share: 2 calls
     client.global_quote("AAAA")
     client.global_quote("BBBB")
     with pytest.raises(DataError, match="budget"):
@@ -160,3 +160,14 @@ def test_scout_uses_alpha_vantage_movers_and_sentiment(cfg, db, clk):
     assert "alphavantage:gainers" in sources and "alphavantage:losers" not in sources
     top = next(c for c in cands if c["symbol"] == "ABCD")
     assert "av_sentiment" in top["catalyst"].tags and top["news_sentiment"]["articles"] == 2
+
+
+def test_av_budget_shares_keep_one_use_from_starving_another():
+    http = _StubHttp([load("av_global_quote.json")] * 3 + [load("av_news.json")])
+    client = av.AlphaVantage(http, "SECRETKEY123", daily_limit=12, per_minute=50)  # prices 3, news 6, movers 3
+    for sym in ("AAAA", "BBBB", "CCCC"):
+        client.global_quote(sym)
+    with pytest.raises(DataError, match="prices share"):
+        client.global_quote("DDDD")
+    assert client.remaining_today("news") == 6
+    assert client.news_sentiment("ABCD")["articles"] == 2

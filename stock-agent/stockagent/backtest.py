@@ -185,12 +185,17 @@ class Backtester:
             if not (u.min_price <= bar.close <= u.max_price):
                 continue
             adv = self._adv(sym, i)
-            if adv is not None and adv < u.min_avg_dollar_volume:
+            today_dv = bar.close * bar.volume
+            liq = max(adv or 0.0, today_dv)
+            if liq < u.min_avg_dollar_volume:
                 continue
             df = self.data[sym].iloc[max(0, i - 260) : i + 1]
             ctx = SignalContext(mode="backtest", phase="close")
             for sig in self.engine.signals_for(sym, df, ctx):
-                cands.append(EntryCandidate(sig, Quote(sym, bar.close, ts=self.clock.now(), avg_dollar_volume=adv), avg_dollar_volume=adv))
+                cands.append(EntryCandidate(
+                    sig, Quote(sym, bar.close, ts=self.clock.now(), avg_dollar_volume=liq),
+                    avg_dollar_volume=adv, dollar_volume_today=today_dv,
+                ))
         if cands:
             self.engine.decide_entries(cands, equity, active_from=tomorrow_open)
 

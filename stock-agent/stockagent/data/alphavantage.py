@@ -126,6 +126,11 @@ def parse_news_sentiment(payload: Any, symbol: str) -> dict[str, Any]:
     }
 
 
+# Share of the daily allowance each use may spend, so a burst of one kind
+# (say, price fallbacks while another source is down) cannot starve the rest.
+BUDGET_SHARES = {"movers": 0.25, "news": 0.50, "prices": 0.25}
+
+
 class AlphaVantage:
     def __init__(self, http: HttpClient, api_key: str | None, daily_limit: int = 25, per_minute: int = 5):
         self.http = http
@@ -140,13 +145,17 @@ class AlphaVantage:
     def enabled(self) -> bool:
         return bool(self.api_key)
 
-    def remaining_today(self) -> int:
+    def remaining_today(self, purpose: str | None = None) -> int:
         today = datetime.now(ET).date()
         if self._exhausted_day == today:
             return 0
-        return max(0, self.daily_limit - self.http.quota_used("alphavantage", today))
+        total_left = max(0, self.daily_limit - self.http.quota_used("alphavantage", today))
+        if purpose is None:
+            return total_left
+        cap = max(1, int(round(self.daily_limit * BUDGET_SHARES.get(purpose, 1.0))))
+        return min(total_left, max(0, cap - self.http.quota_used(f"alphavantage:{purpose}", today)))
 
-    def _call(self, params: dict[str, Any], ttl: float) -> Any:
+    def _call(self, params: dict[str, Any], ttl: float, purpose: str = "prices") -> Any:
         if not self.enabled:
             raise DataError("alphavantage: no key (set ALPHA, or put ALPHA=yourkey in a .alpha file)")
         full = {**params, "apikey": self.api_key}
@@ -156,6 +165,8 @@ class AlphaVantage:
         today = datetime.now(ET).date()
         if self.remaining_today() <= 0:
             raise DataError(f"alphavantage: daily budget of {self.daily_limit} requests used")
+        if self.remaining_today(purpose) <= 0:
+            raise DataError(f"alphavantage: today's {purpose} share of the {self.daily_limit}-request budget is used")
         with self._lock:
             now = time.monotonic()
             self._recent = [t for t in self._recent if now - t < 60]
@@ -163,6 +174,7 @@ class AlphaVantage:
                 raise DataError(f"alphavantage: {self.per_minute}/minute limit, try again shortly")
             self._recent.append(now)
         self.http.quota_add("alphavantage", today)
+        self.http.quota_add(f"alphavantage:{purpose}", today)
         try:
             payload = self.http.get_json(URL, params=full, ttl=0)
             check_payload(payload)
@@ -187,10 +199,11 @@ class AlphaVantage:
             raise
 
     def movers(self) -> list[dict[str, Any]]:
-        return parse_movers(self._call({"function": "TOP_GAINERS_LOSERS"}, ttl=2 * 3600))
+        return parse_movers(self._call({"function": "TOP_GAINERS_LOSERS"}, ttl=2 * 3600, purpose="movers"))
 
     def news_sentiment(self, symbol: str) -> dict[str, Any]:
         return parse_news_sentiment(
-            self._call({"function": "NEWS_SENTIMENT", "tickers": symbol, "sort": "LATEST", "limit": 50}, ttl=2 * 3600),
+            self._call({"function": "NEWS_SENTIMENT", "tickers": symbol, "sort": "LATEST", "limit": 50}, ttl=2 * 3600,
+                       purpose="news"),
             symbol,
         )

@@ -30,8 +30,17 @@ class EntryCandidate:
     tip_score: float = 0.0
     tip_ids: list[int] = field(default_factory=list)
     catalyst: CatalystAssessment | None = None
-    avg_dollar_volume: float | None = None
+    avg_dollar_volume: float | None = None  # previous 20 sessions
     reverse_split: bool = False
+    dollar_volume_today: float | None = None  # traded so far today
+
+    @property
+    def liquidity(self) -> float | None:
+        """Dollar volume that can absorb the trade: the 20-day average, or what
+        has already traded today if that is more. A stock that wakes up and
+        trades $20M is liquid today however quiet its last month was."""
+        vals = [v for v in (self.avg_dollar_volume, self.dollar_volume_today) if v is not None]
+        return max(vals) if vals else None
 
 
 class Engine:
@@ -51,6 +60,10 @@ class Engine:
         self.strategies = strategies if strategies is not None else build(cfg.agent.strategies)
         self.learner = learner or StrategyLearner(db, broker.account_id, cfg.agent)
         self.risk = RiskManager(cfg, broker, db, clock)
+        # (symbol, strategy) -> (decision, normalised reason, when logged). The
+        # live loop re-evaluates every minute; an unchanged skip is logged at
+        # most every LOG_REPEAT_MINUTES so the record stays readable.
+        self._last_logged: dict[tuple[str, str], tuple[str, str, datetime]] = {}
 
     # ---------------------------------------------------------------- signals
     def signals_for(self, symbol: str, df: pd.DataFrame, ctx: SignalContext) -> list[Signal]:
@@ -79,6 +92,35 @@ class Engine:
         )
         return {r["symbol"] for r in rows}
 
+    LOG_REPEAT_MINUTES = 30
+
+    def _should_log(self, sym: str, strategy: str, decision: str, why: str) -> bool:
+        import re
+
+        if decision != "skip":
+            return True
+        key = re.sub(r"\$?[\d.,]+%?", "#", why)
+        now = self.clock.now()
+        prev = self._last_logged.get((sym, strategy))
+        if prev and prev[0] == decision and prev[1] == key and (now - prev[2]).total_seconds() < self.LOG_REPEAT_MINUTES * 60:
+            return False
+        self._last_logged[(sym, strategy)] = (decision, key, now)
+        return True
+
+    def _log_signal(self, c: EntryCandidate, final: float, weight: float, decision: str, why: str) -> int:
+        sig = c.signal
+        return self.db.insert(
+            "signals",
+            {
+                "ts": self.clock.now().isoformat(), "symbol": sig.symbol, "strategy": sig.strategy,
+                "score": sig.score, "final_score": round(final, 4), "ref_price": sig.ref_price,
+                "stop_distance": sig.stop_distance, "reward_multiple": sig.reward_multiple,
+                "decision": decision, "decision_reason": why,
+                "data": dumps({"reason": sig.reason, "weight": weight, "tip_score": c.tip_score,
+                               "adv20": c.avg_dollar_volume, "dollar_volume_today": c.dollar_volume_today, **sig.data}),
+            },
+        )
+
     def decide_entries(
         self, candidates: list[EntryCandidate], equity: float, active_from: datetime | None = None
     ) -> list[dict[str, Any]]:
@@ -91,28 +133,18 @@ class Engine:
         cooldown = self._closed_today()
         rows = []
         for c in candidates:
-            sig = c.signal
-            w = weights.get(sig.strategy, 1.0)
-            final = sig.score * w * (1 + 0.15 * min(max(c.tip_score, 0.0), 2.0))
-            sid = self.db.insert(
-                "signals",
-                {
-                    "ts": self.clock.now().isoformat(), "symbol": sig.symbol, "strategy": sig.strategy,
-                    "score": sig.score, "final_score": round(final, 4), "ref_price": sig.ref_price,
-                    "stop_distance": sig.stop_distance, "reward_multiple": sig.reward_multiple,
-                    "data": dumps({"reason": sig.reason, "weight": w, "tip_score": c.tip_score, **sig.data}),
-                },
-            )
-            rows.append((final, sid, c))
+            w = weights.get(c.signal.strategy, 1.0)
+            rows.append((c.signal.score * w * (1 + 0.15 * min(max(c.tip_score, 0.0), 2.0)), w, c))
         rows.sort(key=lambda r: -r[0])
         decisions = []
         seen: set[str] = set()
-        for final, sid, c in rows:
+        for final, w, c in rows:
             sig = c.signal
             sym = sig.symbol
-            decision, why = "skip", ""
+            decision, why, sid = "skip", "", None
+            liq = c.liquidity
             if sym in seen:
-                why = "a stronger signal on this symbol was already considered"
+                decision, why = "superseded", "a stronger signal on this symbol was considered first"
             elif sym in held:
                 why = "already holding or buying this symbol"
             elif sym in cooldown:
@@ -125,8 +157,9 @@ class Engine:
                 why = "reverse split in the last 90 days"
             elif not (u.min_price <= sig.ref_price <= u.max_price):
                 why = f"price {sig.ref_price:.2f} outside ${u.min_price}-${u.max_price}"
-            elif c.avg_dollar_volume is not None and c.avg_dollar_volume < u.min_avg_dollar_volume:
-                why = f"avg dollar volume ${c.avg_dollar_volume:,.0f} below ${u.min_avg_dollar_volume:,.0f}"
+            elif liq is not None and liq < u.min_avg_dollar_volume:
+                why = (f"liquidity ${liq:,.0f} below ${u.min_avg_dollar_volume:,.0f} "
+                       f"(20-day avg ${c.avg_dollar_volume or 0:,.0f}, today ${c.dollar_volume_today or 0:,.0f})")
             else:
                 as_of = active_from.astimezone(mcal.ET).date() if active_from else None
                 ok, gate = self.risk.entry_gate(equity, as_of)
@@ -137,6 +170,7 @@ class Engine:
                     if not size.ok:
                         why = size.reason
                     else:
+                        sid = self._log_signal(c, final, w, "pending", "")
                         order = self.broker.submit_order(
                             sym, "buy", size.qty, "limit", limit_price=size.limit_price, tif="day",
                             strategy=sig.strategy, reason=sig.reason, ref_price=c.quote.last, active_from=active_from,
@@ -157,7 +191,10 @@ class Engine:
                                 {"signal_id": sid, "order_id": order["id"]},
                             )
             seen.add(sym)
-            self.db.execute("UPDATE signals SET decision=?, decision_reason=? WHERE id=?", [decision, why, sid])
+            if sid is not None:
+                self.db.execute("UPDATE signals SET decision=?, decision_reason=? WHERE id=?", [decision, why, sid])
+            elif self._should_log(sym, sig.strategy, decision, why):
+                sid = self._log_signal(c, final, w, decision, why)
             decisions.append({"signal_id": sid, "symbol": sym, "strategy": sig.strategy, "score": final,
                               "decision": decision, "reason": why})
         return decisions

@@ -52,6 +52,17 @@ def cmd_reset(args) -> int:
     return 0
 
 
+def _keep_windows_awake() -> bool:
+    """Ask Windows not to sleep while the agent runs (the display may still
+    turn off). The request ends when the process exits."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    es_continuous, es_system_required = 0x80000000, 0x00000001
+    return bool(ctypes.windll.kernel32.SetThreadExecutionState(es_continuous | es_system_required))
+
+
 def cmd_run(args) -> int:
     from .agent import TradingAgent
     from .llm import CatalystLLM
@@ -67,6 +78,9 @@ def cmd_run(args) -> int:
         phase = agent.tick()
         print(f"tick done (market {phase})")
         return 0
+    if not args.allow_sleep and _keep_windows_awake():
+        print("keeping Windows awake while the agent runs (the screen can still turn off; closing a laptop lid may still sleep it)")
+    print("agent running; Ctrl-C to stop. Check on it with `python -m stockagent journal` in another window.")
     try:
         agent.run_forever()
     except KeyboardInterrupt:
@@ -210,7 +224,7 @@ def cmd_journal(args) -> int:
     cfg, db, clk, broker = _setup(args)
     since = (clk.now() - timedelta(days=args.days)).date().isoformat()
     last = db.one("SELECT ts, event, message FROM journal ORDER BY id DESC LIMIT 1")
-    last_mark = db.scalar("SELECT MAX(ts) FROM marks")
+    last_tick = db.get_meta("last_tick")
     now = clk.now()
 
     def ago(ts: str | None) -> str:
@@ -220,8 +234,8 @@ def cmd_journal(args) -> int:
         return f"{ts[:16].replace('T', ' ')} ({mins:.0f} min ago)" if mins < 600 else ts[:16].replace("T", " ")
 
     print(f"database: {cfg.data.db_path}")
+    print(f"agent last ticked: {ago(last_tick)}   (it ticks every {cfg.agent.poll_seconds}s in market hours, every 5-15 min otherwise)")
     print(f"last journal entry: {ago(last['ts'] if last else None)}")
-    print(f"last quote received: {ago(last_mark)}")
     tips = db.one("SELECT COUNT(*) AS n, COALESCE(SUM(eligible),0) AS ok, COUNT(DISTINCT symbol) AS syms FROM tips WHERE day>=?", [since])
     print(f"tips since {since}: {tips['n']} ({tips['ok']} eligible, {tips['syms']} symbols)")
     by_src = db.all("SELECT source, COUNT(*) AS n FROM tips WHERE day>=? GROUP BY source ORDER BY n DESC", [since])
@@ -292,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("run", help="run the autonomous agent")
     s.add_argument("--once", action="store_true", help="one tick then exit (for cron)")
+    s.add_argument("--allow-sleep", action="store_true", help="do not ask Windows to stay awake")
     s.set_defaults(fn=cmd_run)
 
     s = sub.add_parser("scout", help="find and rank tips now")

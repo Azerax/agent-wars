@@ -54,6 +54,7 @@ python -m stockagent journal           # is it alive, is it finding tips, why it
 python -m stockagent backtest --universe 40 --start 2026-05-01 --end 2026-10-30
 python -m stockagent order buy 20 ABCD --limit 2.10   # manual paper order
 python -m stockagent run --once        # a single tick, for cron
+                                       # `run` asks Windows not to sleep while it trades (--allow-sleep to skip)
 python -m stockagent reset --cash 100
 ```
 
@@ -119,6 +120,10 @@ daily loss limit, costs too high relative to the reward, and so on.
 
 ## Risk and position management
 
+- Liquidity: a stock needs $1M of daily dollar volume, measured as the larger
+  of its 20-day average and what has already traded today. (The first live
+  run counted only the average and rejected every runner, since a stock that
+  is about to run is usually quiet the month before.)
 - Size: the smaller of 8% of equity at risk to the stop, and 65% of equity in
   one position. At most two positions.
 - Entries are marketable limit orders that will not chase more than 1.5%.
@@ -247,7 +252,7 @@ stockagent/
   report.py       metrics and the state behind the dashboard
   server.py       local dashboard + JSON API
   data/           Yahoo, Nasdaq, Alpha Vantage, Stooq, SEC, StockTwits, Reddit, RSS
-tests/            106 tests; fixtures are hand-written in each API's shape
+tests/            113 tests; fixtures are hand-written in each API's shape
 ```
 
 ```bash

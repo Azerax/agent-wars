@@ -64,6 +64,7 @@ class TradingAgent:
         now = self.clock.now()
         phase = mcal.market_phase(now)
         today = now.date()
+        self._heartbeat(now, phase)
         self.broker.expire_day_orders()
         if mcal.is_trading_day(today):
             if phase in ("premarket", "open") and self.db.get_meta("premarket_day") != today.isoformat():
@@ -89,6 +90,23 @@ class TradingAgent:
                 self._journal("error", "tick_failed", None, f"{type(exc).__name__}: {exc}"[:500])
                 phase = "open"
             time.sleep(self._sleep_for(phase))
+
+    def _heartbeat(self, now: datetime, phase: str) -> None:
+        """Record each tick, and say so when the loop was not running during
+        market hours (closed window, computer asleep)."""
+        last = self.db.get_meta("last_tick")
+        self.db.set_meta("last_tick", now.isoformat())
+        if not last:
+            return
+        prev = datetime.fromisoformat(last)
+        gap = (now - prev).total_seconds() / 60
+        missed_session = phase == "open" or mcal.market_phase(prev) == "open"
+        if missed_session and gap > max(10.0, 5 * self.cfg.agent.poll_seconds / 60):
+            self._journal(
+                "warn", "agent_gap", None,
+                f"agent was not running from {prev:%m-%d %H:%M} to {now:%m-%d %H:%M} ET ({gap:.0f} min); "
+                "the computer may have slept or the window was closed",
+            )
 
     def _sleep_for(self, phase: str) -> float:
         if phase == "open":
@@ -133,6 +151,7 @@ class TradingAgent:
         if not symbols:
             return
         quotes = self.md.quotes(symbols)
+        self._fill_liquidity(quotes, today)
         for sym in set(held) | set(pending):
             if sym in quotes:
                 self._attach_range(quotes[sym])
@@ -153,6 +172,16 @@ class TradingAgent:
         if self._last_equity_snapshot is None or now - self._last_equity_snapshot >= timedelta(minutes=15):
             self.broker.record_equity("intraday", self.engine.risk.target_equity(today))
             self._last_equity_snapshot = now
+
+    def _fill_liquidity(self, quotes: dict[str, Quote], today: date) -> None:
+        """The spread model needs dollar volume. Quote fallbacks often lack an
+        average, and modelling those as untraded would invent a huge spread."""
+        for sym, q in quotes.items():
+            hist = self._daily(sym, today)
+            adv20 = avg_dollar_volume(hist) if hist is not None else None
+            today_dv = float(q.volume or 0) * q.last
+            vals = [v for v in (q.avg_dollar_volume, adv20, today_dv) if v]
+            q.avg_dollar_volume = max(vals) if vals else None
 
     def _rescout(self) -> None:
         self.candidates = self.scout.run()
@@ -235,12 +264,12 @@ class TradingAgent:
                 session_fraction=mcal.session_fraction_elapsed(now), minutes_since_open=mcal.minutes_since_open(now),
                 quote=q, catalyst=c.get("catalyst"), social=c.get("social"), tip_score=c.get("score", 0.0),
             )
-            adv = q.avg_dollar_volume or avg_dollar_volume(hist)
-            q.avg_dollar_volume = adv
+            adv20 = avg_dollar_volume(hist)
+            today_dv = float(q.volume or 0) * q.last
             for sig in self.engine.signals_for(sym, df, ctx):
                 cands.append(EntryCandidate(
-                    sig, q, c.get("score", 0.0), c.get("tip_ids", []), c.get("catalyst"), adv,
-                    recent_reverse_split(self.md.splits(sym), today),
+                    sig, q, c.get("score", 0.0), c.get("tip_ids", []), c.get("catalyst"), adv20,
+                    recent_reverse_split(self.md.splits(sym), today), dollar_volume_today=today_dv,
                 ))
         if not cands:
             return

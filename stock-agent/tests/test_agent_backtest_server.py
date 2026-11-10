@@ -262,3 +262,61 @@ def test_journal_command_summarises_activity(tmp_path, monkeypatch, capsys):
     assert main(["journal", "--days", "3650"]) == 0
     out = capsys.readouterr().out
     assert "price # above $#" in out and "avg dollar volume # below #" in out and "source_failed" in out
+
+
+def _agent(cfg, db, market, start):
+    clk = mcal.SimClock(start)
+    broker = SimBroker(db, cfg, clk)
+    broker.open_account(100.0)
+    return clk, broker, TradingAgent(cfg, db, market, broker, clk)
+
+
+def test_runner_with_thin_history_but_heavy_volume_today_is_tradeable(cfg, db, market):
+    """Live run 2026-11-09: every signal was skipped because only the
+    20-day average counted. A $7M day on a $400k/day stock is liquid."""
+    cfg.agent.strategies = ["momentum_breakout"]
+    hist = history(date(2026, 10, 30))
+    hist["volume"] = 200_000.0  # ~$400k a day before today
+    market.bars["ABCD"] = hist
+    clk, broker, agent = _agent(cfg, db, market, at(MON, 8, 0))
+    agent.tick()
+    clk.set(at(MON, 10, 0))
+    market.live["ABCD"] = quote(2.35, volume=3_000_000, avg_dollar_volume=None)
+    agent.tick()
+    assert broker.position("ABCD") is not None, db.all("SELECT decision, decision_reason FROM signals")
+    data = json.loads(db.one("SELECT data FROM signals WHERE decision='entered'")["data"])
+    assert data["adv20"] < 1_000_000 < data["dollar_volume_today"]
+
+
+def test_unchanged_skips_are_logged_once_per_half_hour(cfg, db, market):
+    cfg.agent.strategies = ["momentum_breakout"]
+    cfg.universe.max_price = 2.0  # every signal on the $2.35 stock is skipped for price
+    clk, broker, agent = _agent(cfg, db, market, at(MON, 8, 0))
+    agent.tick()
+    market.live["ABCD"] = quote(2.35)
+    for minute in (0, 1, 2, 3):
+        clk.set(at(MON, 10, minute))
+        agent.tick()
+    assert db.scalar("SELECT COUNT(*) FROM signals") == 1
+    clk.set(at(MON, 10, 31))
+    agent.tick()
+    assert db.scalar("SELECT COUNT(*) FROM signals") == 2
+
+
+def test_fallback_quote_without_volume_average_gets_realistic_spread(cfg, db, market):
+    clk, broker, agent = _agent(cfg, db, market, at(MON, 10, 0))
+    q = Quote("ABCD", 2.0, volume=2_000_000)
+    agent._fill_liquidity({"ABCD": q}, MON)
+    assert q.avg_dollar_volume >= 2_000_000
+    bid, ask = q.bid_ask(cfg.execution)
+    assert (ask - bid) / 2.0 < 0.015  # not the ~4.6% an "untraded" stock would get
+
+
+def test_missed_market_hours_are_flagged(cfg, db, market):
+    clk, broker, agent = _agent(cfg, db, market, at(MON, 14, 30))
+    market.live["ABCD"] = quote(2.0, day_high=2.01, day_low=1.99, open=2.0)
+    agent.tick()
+    clk.set(at(MON, 17, 34))  # the computer slept through the close
+    agent.tick()
+    gap = db.one("SELECT message FROM journal WHERE event='agent_gap'")
+    assert gap and "14:30" in gap["message"] and "17:34" in gap["message"]
